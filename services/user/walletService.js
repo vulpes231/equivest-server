@@ -1,0 +1,365 @@
+const Position = require("../../models/Position");
+const Trade = require("../../models/Trade");
+const Transaction = require("../../models/Transaction");
+const User = require("../../models/User");
+const Wallet = require("../../models/Wallet");
+const { CustomError, getPositionValue } = require("../../utils/utils");
+
+async function fetchUserWallets(userId) {
+  try {
+    const wallets = await Wallet.find({ userId: userId }).lean();
+    const user = await User.findById(userId).lean();
+
+    if (!user) throw new CustomError("User not found", 404);
+
+    const savingsAccounts = user.savingsAccounts || [];
+
+    const accounts = [...wallets, ...savingsAccounts];
+
+    return accounts;
+  } catch (error) {
+    if (error instanceof CustomError) throw error;
+    throw new CustomError(error.message, error.statusCode);
+  }
+}
+
+async function fetchPortfolioAccounts(userId) {
+  try {
+    const [wallets, user] = await Promise.all([
+      Wallet.find({ userId }).lean(),
+      User.findById(userId).lean(),
+    ]);
+
+    if (!user) {
+      throw new CustomError("User not found", 404);
+    }
+
+    const savingsAccounts = user.savingsAccounts || [];
+
+    const filteredWallets = wallets.filter((wallet) => wallet.slug !== "cash");
+
+    const filteredSavings = savingsAccounts.filter(
+      (acct) => acct.canTrade === true,
+    );
+
+    const allAccounts = [...filteredWallets, ...filteredSavings];
+
+    const result = allAccounts.reduce(
+      (acc, account) => {
+        acc.defaultWallets.push(account);
+
+        acc.totalBalance += account.balance?.total || 0;
+        acc.availableBalance += account.balance?.available || 0;
+
+        return acc;
+      },
+      {
+        defaultWallets: [],
+        totalBalance: 0,
+        availableBalance: 0,
+      },
+    );
+
+    const investing = {
+      balance: {
+        total: result.totalBalance,
+        available: result.availableBalance,
+      },
+      slug: "default",
+      name: "investing",
+      _id: "default",
+      dailyProfitPercent:
+        result.defaultWallets.reduce(
+          (sum, account) => sum + (account.dailyProfitPercent || 0),
+          0,
+        ) / (result.defaultWallets.length || 1),
+    };
+
+    const portfolioAccounts = [investing, ...allAccounts];
+
+    return portfolioAccounts;
+  } catch (error) {
+    if (error instanceof CustomError) throw error;
+
+    throw new CustomError(
+      error.message || "Failed to fetch portfolio accounts",
+      error.statusCode || 500,
+    );
+  }
+}
+
+async function fetchTradingAccounts(userId) {
+  try {
+    const [wallets, user] = await Promise.all([
+      Wallet.find({ userId }).lean(),
+      User.findById(userId).lean(),
+    ]);
+
+    if (!user) {
+      throw new CustomError("User not found", 404);
+    }
+
+    const savingsAccounts = user.savingsAccounts || [];
+
+    const filteredWallets = wallets.filter(
+      (wallet) => wallet.slug !== "cash" && wallet.slug !== "auto",
+    );
+
+    const filteredSavings = savingsAccounts.filter(
+      (acct) => acct.canTrade === true,
+    );
+
+    const tradingAccounts = [...filteredWallets, ...filteredSavings];
+
+    return tradingAccounts;
+  } catch (error) {
+    if (error instanceof CustomError) throw error;
+
+    throw new CustomError(
+      error.message || "Failed to fetch portfolio accounts",
+      error.statusCode || 500,
+    );
+  }
+}
+
+async function getUserFinancialSummary(userId) {
+  try {
+    if (!userId) {
+      throw new CustomError("User ID is required", 400);
+    }
+
+    const [wallets, userTrades, positions, user, transactions] =
+      await Promise.all([
+        Wallet.find({ userId }),
+        Trade.find({ userId }),
+        Position.find({ userId }),
+        User.findById(userId),
+        Transaction.find({ userId }),
+      ]);
+
+    if (!user) {
+      throw new CustomError("User not found", 404);
+    }
+
+    const userSavingsAccounts = user.savingsAccounts;
+
+    if (wallets.length === 0 && userTrades.length === 0) {
+      return {
+        totalBalance: 0,
+        availableBalance: 0,
+        dailyProfit: 0,
+        dailyProfitPercent: 0,
+        totalProfitPercent: 0,
+        totalInvested: 0,
+        totalProfit: 0,
+        cashBalance: 0,
+        totalSavings: 0,
+      };
+    }
+
+    const cash = wallets.find((wallet) => wallet.slug === "cash");
+
+    const totalBalance = wallets.reduce(
+      (sum, wallet) => sum + (wallet.balance.total || 0),
+      0,
+    );
+
+    const savingsTransactions = transactions.filter(
+      (trx) => trx.type === "savings",
+    );
+
+    const totalSavingsDeposit = savingsTransactions.reduce(
+      (sum, trx) => sum + (trx.amount || 0),
+      0,
+    );
+
+    const totalSavingsBalance = userSavingsAccounts.reduce(
+      (sum, acct) => sum + (acct.balance.total || 0),
+      0,
+    );
+
+    const availableSavingsBalance = userSavingsAccounts.reduce(
+      (sum, acct) => sum + (acct.balance.available || 0),
+      0,
+    );
+
+    const availableBalance = wallets.reduce(
+      (sum, wallet) => sum + (wallet.balance.available || 0),
+      0,
+    );
+
+    const dailyProfit = wallets.reduce(
+      (sum, wallet) => sum + (wallet.dailyProfit || 0),
+      0,
+    );
+
+    const dailyProfitPercent =
+      totalBalance > 0 ? (dailyProfit / totalBalance) * 100 : 0;
+
+    const totalInvested = userTrades.reduce(
+      (sum, trade) => sum + (trade.performance?.currentValue || 0),
+      0,
+    );
+
+    const totalProfit = userTrades.reduce(
+      (sum, trade) => sum + (trade.performance?.totalReturn || 0),
+      0,
+    );
+
+    const totalProfitPercent =
+      totalInvested > 0 ? (totalProfit / totalInvested) * 100 : 0;
+
+    const cashBalance = cash.balance.available;
+
+    const openTrades = positions.filter((trade) => trade.status === "open");
+
+    const totalOpenProfit = openTrades.reduce(
+      (sum, trade) => sum + (trade.performance?.totalReturn || 0),
+      0,
+    );
+
+    const totalAccountBalance = totalBalance + totalProfit + totalOpenProfit;
+
+    return {
+      totalBalance: totalAccountBalance + totalSavingsBalance,
+      availableBalance: availableBalance + availableSavingsBalance,
+      dailyProfit,
+      dailyProfitPercent: Number(dailyProfitPercent.toFixed(2)),
+      totalProfit,
+      totalProfitPercent: Number(totalProfitPercent.toFixed(2)),
+      totalInvested,
+      cashBalance,
+      totalSavings: totalSavingsDeposit,
+      assetsOwned: openTrades.length,
+    };
+  } catch (error) {
+    if (error instanceof CustomError) {
+      throw error;
+    }
+    throw new CustomError(error.message, error.statusCode);
+  }
+}
+
+async function getWalletInvestData(userId) {
+  try {
+    const [accounts, positions] = await Promise.all([
+      Wallet.find({ userId }),
+      Position.find({ userId }),
+    ]);
+
+    const brokerageAcct = accounts.find((acct) => acct.slug === "brokerage");
+    const investAcct = accounts.find((acct) => acct.slug === "auto");
+
+    if (!brokerageAcct || !investAcct) {
+      throw new CustomError("Required accounts not found", 404);
+    }
+
+    const brokerageId = brokerageAcct._id.toString();
+    const investId = investAcct._id.toString();
+
+    const openTrades = positions.filter((pos) => pos.status === "open");
+
+    const totals = openTrades.reduce(
+      (acc, pos) => {
+        const walletId = pos.wallet.id.toString();
+
+        // currentValue already includes extra
+        const currentValue = Number(pos.performance?.currentValue || 0);
+        const amountInvested = Number(pos.amountInvested || 0);
+
+        const profitLoss = currentValue - amountInvested;
+        const invested = currentValue; // present value of the position
+
+        if (walletId === brokerageId) {
+          acc.brokerage.profitLoss += profitLoss;
+          acc.brokerage.invested += invested;
+        } else if (walletId === investId) {
+          acc.auto.profitLoss += profitLoss;
+          acc.auto.invested += invested;
+        }
+
+        return acc;
+      },
+      {
+        brokerage: { profitLoss: 0, invested: 0 },
+        auto: { profitLoss: 0, invested: 0 },
+      },
+    );
+
+    return {
+      brokerage: {
+        totalProfitLoss: totals.brokerage.profitLoss,
+        totalInvested: totals.brokerage.invested,
+      },
+      auto: {
+        totalProfitLoss: totals.auto.profitLoss,
+        totalInvested: totals.auto.invested,
+      },
+      default: {
+        totalProfitLoss: totals.auto.profitLoss + totals.brokerage.profitLoss,
+        totalInvested: totals.auto.invested + totals.brokerage.invested,
+      },
+    };
+  } catch (error) {
+    if (error instanceof CustomError) throw error;
+
+    throw new CustomError(
+      error.message || "Failed to fetch wallet investment data",
+      error.statusCode || 500,
+    );
+  }
+}
+
+async function calculateNetworth(userId) {
+  try {
+    const [wallets, user, positions] = await Promise.all([
+      Wallet.find({ userId }).lean(),
+      User.findById(userId).lean(),
+      Position.find({ userId }).lean(),
+    ]);
+
+    if (!user) {
+      throw new CustomError("User not found", 404);
+    }
+
+    const savingsAccounts = user.savingsAccounts || [];
+
+    const totalSavingsBalance = savingsAccounts.reduce(
+      (sum, acct) => sum + (acct.balance.total || 0),
+      0,
+    );
+
+    const totalBalance = wallets.reduce(
+      (sum, wallet) => sum + (wallet.balance.total || 0),
+      0,
+    );
+
+    const openTrades = positions.filter((trade) => trade.status === "open");
+
+    const totalPositionValue = openTrades.reduce(
+      (sum, position) => sum + getPositionValue(position),
+      0,
+    );
+
+    const totalNetWorth =
+      totalSavingsBalance + totalPositionValue + totalBalance;
+
+    return totalNetWorth;
+  } catch (error) {
+    if (error instanceof CustomError) throw error;
+
+    throw new CustomError(
+      error.message || "Failed to fetch networth",
+      error.statusCode || 500,
+    );
+  }
+}
+
+module.exports = {
+  fetchUserWallets,
+  getUserFinancialSummary,
+  getWalletInvestData,
+  fetchPortfolioAccounts,
+  fetchTradingAccounts,
+  calculateNetworth,
+};

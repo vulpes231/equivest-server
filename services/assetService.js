@@ -1,0 +1,98 @@
+const Asset = require("../models/Asset");
+const { CustomError } = require("../utils/utils");
+
+async function fetchAssets(queryData) {
+  const { page, limit, sortBy, type } = queryData;
+  try {
+    console.log("SORT BY RECEIVED:", sortBy);
+    const filter = {};
+
+    if (type) filter["type"] = type;
+
+    let sort = {};
+
+    switch (sortBy) {
+      case "top_gainers":
+        sort = { "priceData.changePercent": -1 };
+        break;
+
+      case "top_losers":
+        sort = { "priceData.changePercent": 1 };
+        break;
+
+      case "24h_change":
+        sort = { "priceData.change": -1 };
+        break;
+
+      case "market_cap":
+        sort = { "fundamentals.marketCap": -1 };
+        break;
+
+      case "volume":
+        sort = { "priceData.volume": -1 };
+        break;
+
+      case "name":
+        sort = { name: 1 };
+        break;
+
+      default:
+        sort = { "priceData.volume": -1 };
+    }
+
+    const assets = await Asset.find(filter).sort(sort);
+
+    const totalAssetCount = await Asset.countDocuments(filter);
+    const totalPages = Math.ceil(totalAssetCount / limit);
+    return { assets, totalAssetCount, totalPages, currentPage: page };
+  } catch (error) {
+    throw new CustomError("Failed to fetch assets", 500);
+  }
+}
+async function fetchAssetById(assetId) {
+  if (!assetId) throw new CustomError("Asset ID required!", 400);
+  try {
+    const asset = await Asset.findById(assetId);
+    return asset;
+  } catch (error) {
+    throw new CustomError("Failed to fetch asset!", 500);
+  }
+}
+
+async function fetchUserAssets(userId) {
+  try {
+    const userAssets = await Asset.find({ userId });
+    return userAssets;
+  } catch (error) {
+    throw new CustomError("Failed to fetch user assets", 500);
+  }
+}
+
+async function searchAssets(queryData) {
+  const { query } = queryData;
+  if (!query || query.length < 2) {
+    throw new CustomError("Invalid search term!", 400);
+  }
+  try {
+    const assets = await Asset.find({
+      $or: [
+        { name: { $regex: query, $options: "i" } },
+        { symbol: { $regex: query, $options: "i" } },
+      ],
+    })
+      .select(
+        "name symbol type priceData.current _id priceData.change priceData.changePercent imageUrl fundamentals.marketCap",
+      )
+      .lean();
+    return assets;
+  } catch (error) {
+    throw new CustomError(error.message, 500);
+  }
+}
+
+module.exports = {
+  fetchAssets,
+  fetchAssetById,
+  fetchUserAssets,
+  searchAssets,
+};

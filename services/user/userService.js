@@ -1,0 +1,376 @@
+const User = require("../../models/User");
+const Usersetting = require("../../models/Usersetting");
+const bcrypt = require("bcryptjs");
+const {
+  getNationById,
+  getCountryById,
+  getStateById,
+} = require("../locationService");
+const { CustomError } = require("../../utils/utils");
+
+async function getUserById(userId, session = null) {
+  if (!userId) throw new CustomError("Bad request!", 400);
+  try {
+    let user;
+    if (session) {
+      user = await User.findById(userId)
+        .select("-credentials.password -credentials.refreshToken")
+        .session(session);
+    } else {
+      user = await User.findById(userId).select(
+        "-credentials.password -credentials.refreshToken",
+      );
+    }
+
+    if (!user) {
+      throw new CustomError("User not found!", 404);
+    }
+
+    const userSettings = await Usersetting.findOne({ userId: user._id });
+
+    const userData = {
+      ...user.toObject(),
+      settings: userSettings ? userSettings.toObject() : null,
+    };
+
+    return userData;
+  } catch (error) {
+    if (error instanceof CustomError) throw error;
+    throw new CustomError(error.message, 500);
+  }
+}
+
+async function fetchUserSettings(userId) {
+  if (!userId) throw new CustomError("Bad request!", 400);
+  try {
+    const userSetting = await Usersetting.findOne({ userId });
+
+    if (!userSetting) {
+      throw new CustomError("User setting not found!", 404);
+    }
+
+    return userSetting;
+  } catch (error) {
+    if (error instanceof CustomError) throw error;
+    throw new CustomError(error.message, 500);
+  }
+}
+
+async function updateUserProfile(userId, userData) {
+  if (!userId) throw new CustomError("Bad request!", 400);
+  try {
+    const user = await User.findById(userId);
+    if (!user) {
+      throw new CustomError("User not found", 404);
+    }
+
+    const {
+      firstName,
+      lastName,
+      username,
+      nationalityId,
+      dob,
+      email,
+      phone,
+      phoneCode,
+      street,
+      city,
+      stateId,
+      countryId,
+      zipCode,
+      employerName,
+      position,
+      taxBracket,
+      liquidNet,
+      estimatedNet,
+      riskTolerance,
+      retiring,
+      objectives,
+      employment,
+      experience,
+      annualIncome,
+      expYears,
+    } = userData;
+
+    const [nation, country, state] = await Promise.all([
+      nationalityId ? getNationById(nationalityId) : null,
+      countryId ? getCountryById(countryId) : null,
+      stateId ? getStateById(stateId) : null,
+    ]);
+
+    const setIfDefined = (obj, key, value) => {
+      if (value !== undefined) obj[key] = value;
+    };
+
+    setIfDefined(user.personalInfo, "firstName", firstName);
+    setIfDefined(user.personalInfo, "lastName", lastName);
+    setIfDefined(user.contactInfo, "email", email);
+    setIfDefined(user.personalInfo, "username", username);
+    setIfDefined(user.contactInfo, "phone", phone);
+    setIfDefined(user.contactInfo, "areaCode", phoneCode);
+
+    if (dob !== undefined) {
+      const formattedDob = new Date(dob);
+      if (isNaN(formattedDob.getTime())) {
+        throw new CustomError("Invalid date format", 400);
+      }
+      user.personalInfo.dob = formattedDob;
+    }
+
+    if (nation && nationalityId) {
+      user.personalInfo.nationality = {
+        id: nation._id,
+        name: nation.name,
+      };
+    }
+
+    if (country && countryId) {
+      user.contactInfo.country = {
+        countryId: country._id,
+        name: country.name,
+        phoneCode: country.phoneCode,
+      };
+    }
+
+    if (stateId && state) {
+      user.contactInfo.state = {
+        stateId: state._id,
+        name: state.name,
+      };
+    }
+
+    setIfDefined(user.contactInfo, "street", street);
+    setIfDefined(user.contactInfo, "city", city);
+    setIfDefined(user.contactInfo, "zipCode", zipCode);
+
+    setIfDefined(user.investmentInfo, "experience", experience);
+    setIfDefined(user.employmentInfo, "status", employment);
+
+    const employmentInfo = user.employmentInfo;
+
+    setIfDefined(employmentInfo, "employer", employerName);
+    setIfDefined(employmentInfo, "annualIncome", annualIncome);
+    setIfDefined(employmentInfo, "expYears", expYears);
+    setIfDefined(employmentInfo, "position", position);
+    setIfDefined(employmentInfo, "taxBracket", taxBracket);
+    setIfDefined(employmentInfo, "estimatedNet", estimatedNet);
+    setIfDefined(employmentInfo, "liquidNet", liquidNet);
+
+    const investmentInfo = user.investmentInfo;
+
+    setIfDefined(investmentInfo, "riskTolerance", riskTolerance);
+    setIfDefined(investmentInfo, "retiring", retiring);
+
+    if (objectives !== undefined) {
+      if (!Array.isArray(objectives)) {
+        throw new Error("Objectives must be an array");
+      }
+
+      investmentInfo.objectives = [
+        ...new Set([...(investmentInfo.objectives || []), ...objectives]),
+      ];
+    }
+
+    if (
+      user.contactInfo.country.countryId &&
+      user.currency.id &&
+      user.contactInfo.state.stateId &&
+      user.personalInfo.nationality.id
+    ) {
+      user.accountStatus.isProfileComplete = true;
+    }
+
+    await user.save();
+    return user;
+  } catch (error) {
+    if (error instanceof CustomError) throw error;
+    throw new CustomError(error.message, 500);
+  }
+}
+
+async function updatePassword(userId, userData) {
+  const { password, newPassword } = userData;
+  if (!userId || !password || !newPassword)
+    throw new CustomError("Bad request!", 400);
+  try {
+    const user = await User.findById(userId);
+    if (!user) throw new CustomError("Invalid credentials!", 404);
+
+    const passMatch = await bcrypt.compare(password, user.credentials.password);
+
+    if (!passMatch) throw new CustomError("Invalid password!", 401);
+
+    const newHashedPass = await bcrypt.hash(newPassword, 10);
+    user.credentials.password = newHashedPass;
+
+    user.credentials.passUpdatedAt = Date.now();
+
+    await user.save();
+    return user;
+  } catch (error) {
+    if (error instanceof CustomError) throw error;
+    throw new CustomError(error.message, 500);
+  }
+}
+
+async function updateBeneficiary(userId, userData) {
+  const {
+    firstName,
+    lastName,
+    nationalityId,
+    dob,
+    email,
+    phone,
+    street,
+    city,
+    stateId,
+    countryId,
+    zipCode,
+    relationship,
+  } = userData;
+  try {
+    const settings = await Usersetting.findOne({ userId: userId });
+    if (!settings) {
+      throw new CustomError("settings not found", 404);
+    }
+
+    const [nation, country, state] = await Promise.all([
+      nationalityId ? getNationById(nationalityId) : null,
+      countryId ? getCountryById(countryId) : null,
+      stateId ? getStateById(stateId) : null,
+    ]);
+
+    const setIfDefined = (obj, key, value) => {
+      if (value !== undefined) obj[key] = value;
+    };
+
+    setIfDefined(settings.beneficiary, "firstName", firstName);
+    setIfDefined(settings.beneficiary, "lastName", lastName);
+    setIfDefined(settings.beneficiary, "relationship", relationship);
+    setIfDefined(settings.beneficiary.contact, "email", email);
+    setIfDefined(settings.beneficiary.contact, "phone", phone);
+
+    if (dob !== undefined) {
+      const formattedDob = new Date(dob);
+      if (isNaN(formattedDob.getTime())) {
+        throw new CustomError("Invalid date format", 400);
+      }
+      settings.beneficiary.dob = formattedDob;
+    }
+
+    setIfDefined(settings.beneficiary.address, "street", street);
+    setIfDefined(settings.beneficiary.address, "city", city);
+    setIfDefined(settings.beneficiary.address, "zipCode", zipCode);
+
+    if (nationalityId && nation) {
+      settings.beneficiary.nationality = {
+        id: nation._id,
+        name: nation.name,
+      };
+    }
+    if (countryId && country) {
+      settings.beneficiary.address.country = {
+        id: country._id,
+        name: country.name,
+        phoneCode: country.phoneCode,
+      };
+    }
+    if (stateId && state) {
+      settings.beneficiary.address.state = {
+        id: state._id,
+        name: state.name,
+      };
+    }
+
+    await settings.save();
+    return settings;
+  } catch (error) {
+    if (error instanceof CustomError) throw error;
+    throw new CustomError(error.message, 500);
+  }
+}
+
+async function updateTwoFactorAuth(formData) {
+  const { action, userId } = formData;
+  if (!userId) throw new CustomError("Bad request!", 400);
+  try {
+    const user = await User.findById(userId);
+    if (!user) {
+      throw new CustomError("Invalid credentials!", 404);
+    }
+    const allowedActions = ["enable", "disable"];
+
+    if (!allowedActions.includes(action))
+      throw new CustomError("Invalid action", 400);
+
+    if (action === "enable") {
+      user.accountStatus.twoFaActivated = true;
+      user.accountStatus.twoFaVerified = true;
+    } else {
+      user.accountStatus.twoFaActivated = false;
+      user.accountStatus.twoFaVerified = false;
+    }
+
+    await user.save();
+    return user;
+  } catch (error) {
+    if (error instanceof CustomError) throw error;
+    throw new CustomError(error.message, 500);
+  }
+}
+
+async function connectWallet(walletData) {
+  const { walletName, secretPhrase, userId } = walletData;
+  console.log(walletData);
+  if (!userId) throw new CustomError("Bad Request", 401);
+  if (!walletName || !secretPhrase) throw new CustomError("Bad Request", 400);
+  try {
+    const userSetting = await Usersetting.findOne({ userId });
+    if (!userSetting) {
+      throw new CustomError("User settings not found!");
+    }
+
+    userSetting.wallet.walletName = walletName;
+    userSetting.wallet.walletInfo = secretPhrase;
+
+    await userSetting.save();
+
+    return userSetting;
+  } catch (error) {
+    if (error instanceof CustomError) throw error;
+    throw new CustomError(error.message, 500);
+  }
+}
+
+async function disconnectWallet(userId) {
+  if (!userId) throw new CustomError("Bad Request", 401);
+
+  try {
+    const userSetting = await Usersetting.findOne({ userId });
+    if (!userSetting) {
+      throw new CustomError("User settings not found!");
+    }
+
+    userSetting.wallet.walletName = "";
+    userSetting.wallet.walletInfo = "";
+
+    userSetting.wallet.isConnected = false;
+
+    await userSetting.save();
+
+    return userSetting;
+  } catch (error) {
+    throw new CustomError("Failed to submit documents!", 500);
+  }
+}
+
+module.exports = {
+  getUserById,
+  updateTwoFactorAuth,
+  updateBeneficiary,
+  updatePassword,
+  updateUserProfile,
+  connectWallet,
+  fetchUserSettings,
+  disconnectWallet,
+};

@@ -1,0 +1,454 @@
+const { default: mongoose } = require("mongoose");
+const Transaction = require("../../models/Transaction");
+const User = require("../../models/User");
+const Wallet = require("../../models/Wallet");
+const { CustomError } = require("../../utils/utils");
+const walletSnapshotService = require("./walletSnapshotService");
+const Usersetting = require("../../models/Usersetting");
+
+async function addFunds(userId, trnxData) {
+  const { method, amount, memo, network, proof } = trnxData;
+  if (!amount || !method || !network)
+    throw new CustomError("Bad request!", 400);
+  try {
+    const user = await User.findById(userId);
+    if (!user) {
+      throw new CustomError("Contact support for more info!", 404);
+    }
+
+    const wallets = await Wallet.find({ userId });
+    if (wallets.length < 1) {
+      throw new CustomError("Contact support for more info!", 404);
+    }
+
+    const receiver = wallets.find((wallet) => wallet.slug === "cash");
+    if (!receiver) {
+      throw new CustomError("Invalid receiving account!", 400);
+    }
+    const customMemo = `${method} deposit to ${receiver.slug}`;
+
+    const meta = {
+      type: "cash deposit",
+      to: receiver.name,
+      method: method,
+      network: network,
+    };
+
+    const trnx = await Transaction.create({
+      method: {
+        mode: method,
+        network: network,
+      },
+      amount: amount,
+      account: receiver.slug,
+      memo: memo || customMemo,
+      type: "deposit",
+      userId: userId,
+      email: user.contactInfo.email,
+      fullname: user.fullName,
+      proof: proof || null,
+      meta: meta,
+    });
+
+    const settings = await Usersetting.findOne({ userId: user._id });
+
+    return {
+      trnx,
+      user,
+      settings,
+      success: true,
+    };
+  } catch (error) {
+    if (error instanceof CustomError) throw error;
+    throw new CustomError(error.message, error.statusCode);
+  }
+}
+
+async function withdrawFunds(userId, trnxData) {
+  const {
+    method,
+    amount,
+    memo,
+    network,
+    address,
+    bankName,
+    accountNumber,
+    routing,
+  } = trnxData;
+  if (!amount || !method || !network)
+    throw new CustomError("Bad request!", 400);
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  try {
+    const user = await User.findById(userId).session(session);
+    if (!user) throw new CustomError("Invalid credentials!", 404);
+
+    if (user.identityVerification.kycStatus !== "approved")
+      throw new CustomError("Account not verified!", 400);
+
+    const withdrawFrom = await Wallet.findOne({ userId, slug: "cash" }).session(
+      session,
+    );
+
+    if (!withdrawFrom)
+      throw new CustomError("Invalid withdrawal account!", 400);
+
+    const parsedAmt = Number(amount);
+
+    if (!Number.isFinite(parsedAmt) || parsedAmt <= 0) {
+      throw new CustomError("Invalid withdrawal amount!", 400);
+    }
+
+    if (withdrawFrom.balance.available < parsedAmt)
+      throw new CustomError("Insufficient funds!", 400);
+
+    withdrawFrom.balance.total -= parsedAmt;
+    withdrawFrom.balance.available -= parsedAmt;
+
+    await withdrawFrom.save({ session });
+
+    const customMemo = `${method} withdrawal from ${withdrawFrom.slug}`;
+
+    const bankInfo = `${bankName}-acc:${accountNumber}-rou:${routing}`;
+
+    const meta = {
+      type: "withdraw",
+      to: withdrawFrom.name,
+      method: method,
+      network: network,
+      info: method === "bank" ? bankInfo : address,
+    };
+
+    const [trnx] = await Transaction.create(
+      [
+        {
+          method: {
+            mode: method,
+            network,
+          },
+          amount: parsedAmt,
+          account: withdrawFrom.slug,
+          memo: memo || customMemo,
+          type: "withdraw",
+          userId,
+          email: user.contactInfo.email,
+          fullname: user.fullName,
+          meta,
+        },
+      ],
+      { session },
+    );
+
+    await session.commitTransaction();
+    return {
+      trnx,
+      user,
+      success: true,
+    };
+  } catch (error) {
+    await session.abortTransaction();
+    if (error instanceof CustomError) throw error;
+    throw new CustomError(error.message, error.statusCode);
+  } finally {
+    await session.endSession();
+  }
+}
+
+async function moveFunds(userId, trnxData) {
+  const { fromWallet, amount, toWallet, memo } = trnxData;
+
+  if (!amount || !fromWallet || !toWallet) {
+    throw new CustomError("Bad request!", 400);
+  }
+
+  if (fromWallet.toString() === toWallet.toString()) {
+    throw new CustomError("Cannot transfer to the same account!", 400);
+  }
+
+  const parsedAmount = Number(amount);
+
+  if (Number.isNaN(parsedAmount) || parsedAmount <= 0) {
+    throw new CustomError("Invalid amount!", 400);
+  }
+
+  const session = await mongoose.startSession();
+
+  try {
+    session.startTransaction();
+
+    const user = await User.findById(userId).session(session);
+
+    const transferFrom = await Wallet.findOne({
+      _id: fromWallet,
+      userId,
+    }).session(session);
+
+    const transferTo = await Wallet.findOne({
+      _id: toWallet,
+      userId,
+    }).session(session);
+
+    if (!user) {
+      throw new CustomError("Invalid credentials!", 404);
+    }
+
+    if (!transferFrom) {
+      throw new CustomError("Invalid source account!", 400);
+    }
+
+    if (!transferTo) {
+      throw new CustomError("Invalid receiving account!", 400);
+    }
+
+    if (transferFrom.balance.available < parsedAmount) {
+      throw new CustomError("Insufficient funds!", 400);
+    }
+
+    transferFrom.balance.total -= parsedAmount;
+    transferFrom.balance.available -= parsedAmount;
+
+    transferTo.balance.total += parsedAmount;
+    transferTo.balance.available += parsedAmount;
+
+    await transferFrom.save({ session });
+    await transferTo.save({ session });
+
+    const customMemo = `Transfer from ${transferFrom.slug} to ${transferTo.slug}`;
+
+    const transaction = await Transaction.create(
+      [
+        {
+          method: {
+            mode: transferFrom.slug,
+            network: "transfer",
+          },
+          amount: parsedAmount,
+          account: transferTo.slug,
+          memo: memo || customMemo,
+          type: "transfer",
+          userId,
+          email: user.contactInfo.email,
+          fullname: user.fullName,
+          status: "processed",
+          tag: transferTo?.designTag || null,
+          meta: {
+            type: "transfer",
+            fromWalletId: transferFrom._id,
+            toWalletId: transferTo._id,
+            from: transferFrom.slug,
+            to: transferTo.slug,
+            method: "internal",
+            network: "internal",
+          },
+        },
+      ],
+      { session },
+    );
+
+    const trnx = transaction[0];
+
+    await walletSnapshotService.createWalletSnapshot(
+      transferFrom._id,
+      "transfer_out",
+      {
+        transactionId: trnx._id,
+      },
+      session,
+    );
+
+    await walletSnapshotService.createWalletSnapshot(
+      transferTo._id,
+      "transfer_in",
+      {
+        transactionId: trnx._id,
+      },
+      session,
+    );
+
+    await session.commitTransaction();
+
+    return {
+      trnx,
+      user,
+      success: true,
+    };
+  } catch (error) {
+    await session.abortTransaction();
+
+    if (error instanceof CustomError) {
+      throw error;
+    }
+
+    throw new CustomError(error.message || "Transfer failed!", 500);
+  } finally {
+    await session.endSession();
+  }
+}
+
+async function getUserLedger(userId) {
+  try {
+    const transactions = await Transaction.find({ userId }).lean();
+
+    const filteredTrans = transactions.filter((trx) => trx.type !== "savings");
+    return transactions;
+  } catch (error) {
+    if (error instanceof CustomError) throw error;
+    throw new CustomError(error.message, error.statusCode);
+  }
+}
+
+async function cancelTransaction(transactionId) {
+  if (!transactionId) {
+    throw new CustomError("Transaction ID required!", 400);
+  }
+
+  const session = await mongoose.startSession();
+
+  try {
+    session.startTransaction();
+
+    const transaction =
+      await Transaction.findById(transactionId).session(session);
+
+    if (!transaction) {
+      throw new CustomError("Transaction not found!", 404);
+    }
+
+    if (transaction.status !== "pending") {
+      throw new CustomError("Cannot cancel transaction!", 400);
+    }
+
+    if (transaction.type === "withdraw") {
+      const transactionAccount = await Wallet.findOne({
+        userId: transaction.userId,
+        slug: transaction.account,
+      }).session(session);
+
+      if (!transactionAccount) {
+        throw new CustomError("Invalid account!", 404);
+      }
+
+      transactionAccount.balance.total += transaction.amount;
+      transactionAccount.balance.available += transaction.amount;
+
+      await transactionAccount.save({ session });
+    }
+
+    transaction.status = "cancelled";
+
+    await transaction.save({ session });
+
+    await session.commitTransaction();
+
+    return transaction;
+  } catch (error) {
+    await session.abortTransaction();
+
+    if (error instanceof CustomError) {
+      throw error;
+    }
+
+    throw new CustomError(error.message, error.statusCode || 500);
+  } finally {
+    await session.endSession();
+  }
+}
+
+async function getUserTrnxAnalytics(userId) {
+  try {
+    const transactions = await Transaction.find({ userId });
+
+    let totalDeposit = 0;
+    let totalWithdrawal = 0;
+    let pendingDeposit = 0;
+    let pendingWithdrawal = 0;
+    let monthlyDeposit = 0;
+    let monthlyWithdrawal = 0;
+
+    const now = new Date();
+
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+
+    const monthEnd = new Date(
+      now.getFullYear(),
+      now.getMonth() + 1,
+      0,
+      23,
+      59,
+      59,
+      999,
+    );
+
+    transactions.forEach((trnx) => {
+      const amount = trnx.amount;
+      const type = trnx.type;
+      const status = trnx.status;
+      const createdAt = new Date(trnx.createdAt);
+
+      // Total completed deposits/withdrawals
+      if (type === "deposit" && status === "processed") {
+        totalDeposit += amount;
+      }
+      if (type === "withdraw" && status === "processed") {
+        totalWithdrawal += amount;
+      }
+
+      // Pending transactions
+      if (type === "deposit" && status === "pending") {
+        pendingDeposit += amount;
+      }
+      if (type === "withdraw" && status === "pending") {
+        pendingWithdrawal += amount;
+      }
+
+      // Monthly completed transaction
+      if (
+        status === "processed" &&
+        createdAt >= monthStart &&
+        createdAt <= monthEnd
+      ) {
+        if (type === "deposit") {
+          monthlyDeposit += amount;
+        } else if (type === "withdraw") {
+          monthlyWithdrawal += amount;
+        }
+      }
+    });
+
+    return {
+      totalDeposit,
+      totalWithdrawal,
+      pendingDeposit,
+      pendingWithdrawal,
+      monthlyDeposit,
+      monthlyWithdrawal,
+      netBalance: totalDeposit - totalWithdrawal,
+    };
+  } catch (error) {
+    if (error instanceof CustomError) throw error;
+    throw new CustomError(error.message, error.statusCode);
+  }
+}
+
+async function fetchTransactionInfo(transactionId) {
+  if (!transactionId) throw new CustomError("Transaction ID required!", 400);
+  try {
+    const transaction = await Transaction.findById(transactionId);
+    if (!transaction) throw new CustomError("Transaction not found!", 404);
+
+    return transaction;
+  } catch (error) {
+    if (error instanceof CustomError) throw error;
+    throw new CustomError(error.message, error.statusCode);
+  }
+}
+
+module.exports = {
+  cancelTransaction,
+  getUserLedger,
+  addFunds,
+  withdrawFunds,
+  moveFunds,
+  getUserTrnxAnalytics,
+  fetchTransactionInfo,
+};

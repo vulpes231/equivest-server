@@ -1,0 +1,436 @@
+const { default: mongoose } = require("mongoose");
+const SavingsAccount = require("../../models/Savingsaccount");
+const Transaction = require("../../models/Transaction");
+const User = require("../../models/User");
+const Wallet = require("../../models/Wallet");
+const { CustomError } = require("../../utils/utils");
+const walletSnapshotService = require("./walletSnapshotService");
+
+async function fetchAvailableSavings() {
+  try {
+    const savingsAccounts = await SavingsAccount.find().lean();
+    return savingsAccounts;
+  } catch (error) {
+    if (error instanceof CustomError) {
+      throw error;
+    }
+    throw new CustomError(error.message, 500);
+  }
+}
+
+async function addSavingsAccount(userId, accountId) {
+  if (!userId || !accountId) throw new CustomError("Bad request!", 400);
+
+  try {
+    const user = await User.findById(userId);
+    if (!user) throw new CustomError("Invalid credentials!", 404);
+
+    const acct = await SavingsAccount.findById(accountId);
+    if (!acct) throw new CustomError("Account not found!", 404);
+
+    const userCountryId = user.contactInfo.country.countryId;
+
+    const canOpenAccount = acct.eligibleCountries.find(
+      (countryId) => countryId.toString() === userCountryId.toString(),
+    );
+
+    if (!canOpenAccount)
+      throw new CustomError("Account not available in your location!", 400);
+
+    const acctExistsInUserSavings = user.savingsAccounts.find(
+      (userAcct) => userAcct.accountId.toString() === acct._id.toString(),
+    );
+
+    if (acctExistsInUserSavings)
+      throw new CustomError("Account exist already!", 409);
+
+    const newAccountData = {
+      name: acct.name,
+      accountId: acct._id,
+      symbol: acct.symbol,
+      title: acct.title,
+      rate: acct.interestRate,
+      canTrade: acct.canTrade,
+      tag: acct.tag,
+      apy: acct.yearlyAPY,
+      slug: acct.slug,
+      designTag: acct.designTag,
+      jointMax: acct.jointMaxSelection,
+      depositLimit: {
+        min: acct.contributionLimits.min,
+        max: acct.contributionLimits.max,
+      },
+      withdrawLimit: {
+        min: acct.withdrawalLimits.min,
+        max: acct.withdrawalLimits.max,
+      },
+      balance: {
+        total: 0,
+        available: 0,
+      },
+
+      analytics: {
+        totalReturn: 0,
+        dailyChange: 0,
+        contribution: 0,
+        withdrawals: 0,
+      },
+    };
+
+    user.savingsAccounts.push(newAccountData);
+    await user.save();
+
+    const createdAcct = user.savingsAccounts.find(
+      (acct) => acct.accountId.toString() === accountId.toString(),
+    );
+
+    return { success: true, account: createdAcct, user };
+  } catch (error) {
+    console.log(error);
+    if (error instanceof CustomError) {
+      throw error;
+    }
+    throw new CustomError("Failed to open savings account. Try again", 500);
+  }
+}
+
+async function fetchUserSavingsAccount(userId) {
+  if (!userId) throw new CustomError("Bad request", 400);
+  try {
+    const user = await User.findById(userId);
+    if (!user) throw new CustomError("Invalid credentials!", 404);
+
+    const userSavingsAccount = user.savingsAccounts;
+    return userSavingsAccount;
+  } catch (error) {
+    throw new CustomError(
+      "Failed to get user savings accounts. Try again",
+      500,
+    );
+  }
+}
+
+async function fetchUserSavingsHistory(userId, queryData) {
+  if (!userId) throw new CustomError("Bad request!", 400);
+  const { page, limit, sortBy } = queryData;
+  try {
+    const sort = {};
+    if (sortBy === "createdAt") sort["createdAt"] = -1;
+    if (sortBy === "method") sort["method"] = -1;
+
+    const savingsHistory = await Transaction.find({
+      userId,
+      type: "savings",
+    })
+      .sort(sort)
+      .skip((page - 1) * limit);
+
+    const totalItem = await Transaction.countDocuments({
+      userId,
+      type: "savings",
+    });
+
+    const totalPage = Math.ceil(totalItem / limit);
+    const currentPage = page;
+    return { savingsHistory, totalItem, totalPage, currentPage };
+  } catch (error) {
+    throw new CustomError("Failed to fetch user savings history", 500);
+  }
+}
+
+async function fundSavings(userId, fundData) {
+  const { amount, accountId, memo } = fundData;
+
+  if (!amount || !accountId) {
+    throw new CustomError("Bad request!", 400);
+  }
+
+  const session = await mongoose.startSession();
+
+  try {
+    session.startTransaction();
+
+    const user = await User.findById(userId).session(session);
+    if (!user) {
+      throw new CustomError("Invalid credentials!", 401);
+    }
+
+    const wallet = await Wallet.findOne({ slug: "cash", userId }).session(
+      session,
+    );
+    if (!wallet) {
+      throw new CustomError("Invalid wallet selected!", 404);
+    }
+
+    const accountIndex = user.savingsAccounts.findIndex(
+      (acct) => acct.accountId.toString() === accountId,
+    );
+
+    if (accountIndex === -1) {
+      throw new CustomError("Invalid savings account!", 404);
+    }
+
+    const account = user.savingsAccounts[accountIndex];
+    const parsedAmount = parseFloat(amount);
+
+    if (isNaN(parsedAmount) || parsedAmount <= 0) {
+      throw new CustomError("Invalid amount!", 400);
+    }
+
+    if (wallet.balance.available < parsedAmount) {
+      throw new CustomError("Insufficient funds!", 400);
+    }
+
+    wallet.balance.available -= parsedAmount;
+    wallet.balance.total -= parsedAmount;
+    await wallet.save({ session });
+
+    user.savingsAccounts[accountIndex].balance.total += parsedAmount;
+    user.savingsAccounts[accountIndex].balance.available += parsedAmount;
+    user.savingsAccounts[accountIndex].analytics.contributions += parsedAmount;
+
+    await user.save({ session });
+
+    const transact = await Transaction.create(
+      [
+        {
+          method: {
+            mode: "contribution",
+            network: "credit",
+          },
+          type: "savings",
+          userId: user._id,
+          account: account.slug,
+          tag: account.designTag,
+          memo: memo || `Cash contribution to ${account.slug}`,
+          amount: parsedAmount,
+          status: "processed",
+          email: user.contactInfo.email,
+          fullname: user.fullName,
+        },
+      ],
+      { session },
+    );
+
+    const userSavingAcctId = user.savingsAccounts[accountIndex]._id;
+
+    const trxn = transact[0]._id;
+
+    await walletSnapshotService.createWalletSnapshot(
+      userSavingAcctId,
+      "contribution",
+      {
+        transactionId: trxn._id,
+      },
+      session,
+      userId,
+    );
+
+    await session.commitTransaction();
+
+    return {
+      success: true,
+      user,
+      transaction: trxn,
+    };
+  } catch (error) {
+    if (session.inTransaction()) {
+      await session.abortTransaction();
+    }
+
+    if (error instanceof CustomError) {
+      throw error;
+    }
+    throw new CustomError(error.message || "Transaction failed", 500);
+  } finally {
+    await session.endSession();
+  }
+}
+
+async function withdrawSavings(userId, withdrawData) {
+  const { amount, accountId, walletId, memo } = withdrawData;
+
+  if (!amount || !accountId || !walletId) {
+    throw new CustomError("Bad request!", 400);
+  }
+
+  const session = await mongoose.startSession();
+
+  try {
+    session.startTransaction();
+
+    const user = await User.findById(userId).session(session);
+    if (!user) {
+      throw new CustomError("Invalid credentials!", 404);
+    }
+
+    const wallet = await Wallet.findOne({ slug: "cash", userId }).session(
+      session,
+    );
+    if (!wallet) {
+      throw new CustomError("Wallet not found!", 404);
+    }
+    const accountIndex = user.savingsAccounts.findIndex(
+      (acct) => acct.accountId.toString() === accountId,
+    );
+
+    if (accountIndex === -1) {
+      throw new CustomError("Invalid savings account!", 404);
+    }
+
+    const account = user.savingsAccounts[accountIndex];
+    const parsedAmount = parseFloat(amount);
+
+    if (isNaN(parsedAmount) || parsedAmount <= 0) {
+      throw new CustomError("Invalid amount!", 400);
+    }
+
+    if (account.analytics.balance.available < parsedAmount) {
+      throw new CustomError("Insufficient funds!", 400);
+    }
+
+    user.savingsAccounts[accountIndex].analytics.balance -= parsedAmount;
+    user.savingsAccounts[accountIndex].analytics.withdrawals += parsedAmount;
+
+    await user.save({ session });
+
+    wallet.balance.available += parsedAmount;
+    wallet.balance.total += parsedAmount;
+
+    await wallet.save({ session });
+
+    const transact = await Transaction.create(
+      [
+        {
+          method: {
+            mode: "cashout",
+            network: "debit",
+          },
+          type: "savings",
+          userId: user._id,
+          account: account.slug,
+          tag: account.designTag,
+          memo: memo || `Cash payout from ${account.slug}`,
+          amount: parsedAmount,
+          status: "processed",
+          fullname: user.fullName,
+        },
+      ],
+      { session },
+    );
+
+    const trxn = transact[0]._id;
+    const userSavingAcctId = user.savingsAccounts[accountIndex]._id;
+
+    await walletSnapshotService.createWalletSnapshot(
+      userSavingAcctId,
+      "cashout",
+      {
+        transactionId: trxn._id,
+      },
+      session,
+      userId,
+    );
+
+    await session.commitTransaction();
+    return { success: true, user, transaction: trxn };
+  } catch (error) {
+    await session.abortTransaction();
+
+    if (error instanceof CustomError) {
+      throw error;
+    }
+    throw new CustomError(error.message || "Transaction failed", 500);
+  } finally {
+    await session.endSession();
+  }
+}
+
+async function fetchSavingsAnalytics(userId) {
+  if (!userId) throw new CustomError("Bad request", 400);
+  try {
+    const user = await User.findById(userId);
+    if (!user) throw new CustomError("Invalid credentials!", 404);
+
+    const userSavingsAccount = user.savingsAccounts || [];
+
+    const retirementAccts = userSavingsAccount.filter(
+      (acct) => acct.tag === "retirement",
+    );
+    const savingsAccts = userSavingsAccount.filter(
+      (acct) => acct.tag === "savings",
+    );
+
+    const saveBal = savingsAccts.reduce((total, value) => {
+      return total + (value.balance?.available || 0);
+    }, 0);
+
+    const retireBal = retirementAccts.reduce((total, value) => {
+      return total + (value.balance?.available || 0);
+    }, 0);
+
+    const analytics = {
+      savingAcctLength: savingsAccts.length,
+      retireAcctLength: retirementAccts.length,
+      savingBalance: saveBal,
+      retirementBalance: retireBal,
+    };
+
+    return analytics;
+  } catch (error) {
+    if (error instanceof CustomError) {
+      throw error;
+    }
+    throw new CustomError(error.message, 500);
+  }
+}
+
+async function deleteUserSavingAccount(formData) {
+  const { userId, accountId } = formData;
+
+  if (!userId || !accountId) {
+    throw new CustomError("userId and accountId are required", 400);
+  }
+
+  try {
+    const user = await User.findById(userId);
+    if (!user) throw new CustomError("User not found!", 404);
+
+    const accountExists = user.savingsAccounts.some(
+      (acct) => acct._id.toString() === accountId,
+    );
+
+    if (!accountExists) {
+      throw new CustomError("Account not found!", 404);
+    }
+
+    const newAccounts = user.savingsAccounts.filter(
+      (acct) => acct._id.toString() !== accountId.toString(),
+    );
+
+    user.savingsAccounts = newAccounts;
+    await user.save();
+
+    return user.savingsAccounts;
+  } catch (error) {
+    if (error instanceof CustomError) {
+      throw error;
+    }
+
+    throw new CustomError(
+      error.message || "Failed to delete account",
+      error.statusCode || 500,
+    );
+  }
+}
+
+module.exports = {
+  fetchAvailableSavings,
+  fetchSavingsAnalytics,
+  fetchUserSavingsAccount,
+  fetchUserSavingsHistory,
+  addSavingsAccount,
+  fundSavings,
+  withdrawSavings,
+  deleteUserSavingAccount,
+};

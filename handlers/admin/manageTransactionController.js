@@ -1,0 +1,234 @@
+const {
+  fetchAllTransactions,
+  getTransactionInfo,
+  editTransaction,
+  createTransaction,
+  updateTransactionStatus,
+  editTransactionInfo,
+} = require("../../services/admin/manageTransactionService");
+const queueService = require("../../services/queueService");
+
+const getTransactionData = async (req, res, next) => {
+  const { transactionId } = req.params;
+  try {
+    const transaction = await getTransactionInfo(transactionId);
+    res.status(200).json({
+      data: transaction,
+      success: true,
+      message: "transaction data fetched successfully",
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const setTransactionStatus = async (req, res, next) => {
+  const { transactionId } = req.params;
+  const { status } = req.body;
+  try {
+    const data = { transactionId, status };
+    const transaction = await updateTransactionStatus(data);
+    res.status(200).json({
+      data: transaction,
+      success: true,
+      message: "transaction status updated fetched successfully",
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const getAllTransactions = async (req, res, next) => {
+  const sortBy = req.query.sortBy;
+  const limit = Math.min(req.query.limit || 15);
+  const page = Math.max(req.query.page || 1);
+  const filterBy = req.query.filterBy;
+  try {
+    const { transactions, totalTrnxs, totalPages, currentPage } =
+      await fetchAllTransactions({
+        sortBy,
+        limit,
+        page,
+        filterBy,
+      });
+    res.status(200).json({
+      data: transactions,
+      success: true,
+      message: "transactions fetched successfully",
+      pagination: {
+        totalPage: totalPages,
+        totalItem: totalTrnxs,
+        currentPage: currentPage,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const updateTransaction = async (req, res, next) => {
+  const { transactionId } = req.params;
+  const { action } = req.body;
+
+  try {
+    const result = await editTransaction(transactionId, action);
+
+    if (
+      result.success &&
+      result.userInfo.sendAlert &&
+      result.transaction.type === "deposit" &&
+      result.transaction.status === "processed"
+    ) {
+      queueService
+        .sendToQueue("email_queue", {
+          type: "DEPOSIT_APPROVED_EMAIL",
+          to: result.user.contactInfo.email,
+          templateData: {
+            transaction: result.transaction,
+            user: result.user,
+          },
+        })
+        .catch((err) => console.error("Failed to send deposit email:", err));
+    }
+
+    if (
+      result.success &&
+      result.userInfo.sendAlert &&
+      result.transaction.type === "deposit" &&
+      result.transaction.status === "failed"
+    ) {
+      queueService
+        .sendToQueue("email_queue", {
+          type: "DEPOSIT_DECLINED_EMAIL",
+          to: result.user.contactInfo.email,
+          templateData: {
+            transaction: result.transaction,
+            user: result.user,
+          },
+        })
+        .catch((err) => console.error("Failed to send deposit email:", err));
+    }
+
+    if (
+      result.success &&
+      result.userInfo.sendAlert &&
+      result.transaction.type === "transfer" &&
+      result.transaction.status === "processed"
+    ) {
+      queueService
+        .sendToQueue("email_queue", {
+          type: "TRANSFER_EMAIL",
+          to: result.user.contactInfo.email,
+          templateData: {
+            transaction: result.transaction,
+            user: result.user,
+          },
+        })
+        .catch((err) => console.error("Failed to send deposit email:", err));
+    }
+
+    if (
+      result.success &&
+      result.userInfo.sendAlert &&
+      result.transaction.type === "withdraw" &&
+      result.transaction.status === "processed"
+    ) {
+      queueService
+        .sendToQueue("email_queue", {
+          type: "WITHDRAW_APPROVED_EMAIL",
+          to: result.user.contactInfo.email,
+          templateData: {
+            transaction: result.transaction,
+            user: result.user,
+          },
+        })
+        .catch((err) => console.error("Failed to send withdrawal email:", err));
+    }
+
+    if (
+      result.success &&
+      result.userInfo.sendAlert &&
+      result.transaction.type === "withdraw" &&
+      result.transaction.status === "failed"
+    ) {
+      queueService
+        .sendToQueue("email_queue", {
+          type: "WITHDRAW_DECLINED_EMAIL",
+          to: result.user.contactInfo.email,
+          templateData: {
+            transaction: result.transaction,
+            user: result.user,
+          },
+        })
+        .catch((err) => console.error("Failed to send withdrawal email:", err));
+    }
+    res.status(200).json({
+      data: null,
+      success: true,
+      message: "transaction updated successfully",
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const adminCreateTransaction = async (req, res, next) => {
+  try {
+    const trnxData = req.body;
+
+    const result = await createTransaction(trnxData);
+
+    if (
+      result.success &&
+      result.userInfo.sendAlert &&
+      result.transaction.type === "deposit"
+    ) {
+      await queueService.sendToQueue("email_queue", {
+        type:
+          result.transaction.type === "deposit"
+            ? "DEPOSIT_APPROVED_EMAIL"
+            : result.transaction.type === "transfer"
+              ? "TRANSFER_EMAIL"
+              : "WITHDRAW_APPROVED_EMAIL",
+        to: result.user.contactInfo.email,
+        templateData: {
+          transaction: result.transaction,
+          user: result.user,
+        },
+      });
+    }
+
+    res.status(200).json({
+      message: `${result.transaction.type} created`,
+      success: true,
+      data: null,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const updateTransactionInfo = async (req, res, next) => {
+  const { transactionId } = req.params;
+
+  try {
+    await editTransactionInfo({ ...req.body, transactionId });
+
+    res.status(200).json({
+      data: null,
+      success: true,
+      message: "transaction updated successfully",
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+module.exports = {
+  updateTransaction,
+  getAllTransactions,
+  getTransactionData,
+  adminCreateTransaction,
+  setTransactionStatus,
+  updateTransactionInfo,
+};

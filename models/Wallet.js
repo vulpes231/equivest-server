@@ -1,0 +1,50 @@
+const mongoose = require("mongoose");
+
+const Schema = mongoose.Schema;
+
+const walletSchema = new Schema(
+  {
+    name: {
+      type: String,
+    },
+    slug: {
+      type: String,
+    },
+    balance: {
+      total: { type: Number, default: 0 },
+      available: { type: Number, default: 0 },
+    },
+    userId: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
+    },
+    dailyProfit: {
+      type: Number,
+      default: 0,
+    },
+    dailyProfitPercent: {
+      type: Number,
+      default: 0,
+    },
+    marginDebt: {
+      type: Number,
+      default: 0,
+    },
+    buyPower: {
+      type: Number,
+      default: 0,
+    },
+    totalInvested: {
+      type: Number,
+      default: 0,
+    },
+    totalProfitLoss: {
+      type: Number,
+      default: 0,
+    },
+  },
+  { timestamps: true },
+);
+
+const Wallet = mongoose.model("Wallet", walletSchema);
+module.exports = Wallet;

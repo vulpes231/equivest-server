@@ -1,0 +1,1599 @@
+const Wallet = require("../models/Wallet");
+const Trade = require("../models/Trade");
+const User = require("../models/User");
+const { logEvent } = require("../middlewares/loggers");
+const axios = require("axios");
+const Asset = require("../models/Asset");
+const portFolioTracker = require("../services/user/portfolioService");
+const Position = require("../models/Position");
+const walletSnapshotService = require("../services/user/walletSnapshotService");
+const portfolioService = require("../services/user/portfolioService");
+const BATCH_SIZE = process.env.CRON_BATCH_SIZE || 50;
+const CRON_DELAY_MS = process.env.CRON_DELAY_MS || 300;
+const COIN_GECKO_API_URL = "https://api.coingecko.com/api/v3";
+const VS_CURRENCY = "usd";
+const REQUEST_DELAY = 6500;
+
+async function updateAssetsData() {
+  console.log("Starting asset data update...");
+  const startTime = Date.now();
+
+  try {
+    console.log("Updating CRYPTO assets...");
+    await updateCryptoAssets();
+
+    console.log("Updating STOCK assets...");
+    await updateStockAssets();
+
+    const endTime = Date.now();
+    const duration = ((endTime - startTime) / 1000).toFixed(2);
+    console.log(`Asset update completed in ${duration}s`);
+  } catch (error) {
+    console.error("Asset data update failed:", error.message);
+    throw error;
+  }
+}
+
+async function updateCryptoAssets() {
+  console.log("Starting crypto asset update...");
+  const startTime = Date.now();
+
+  try {
+    const assets = await Asset.find({
+      type: "crypto",
+      isActive: true,
+    }).limit(250);
+
+    if (assets.length === 0) {
+      console.log("No active crypto assets found to update");
+      return;
+    }
+
+    console.log(`Updating ${assets.length} crypto assets...`);
+
+    const assetsByApiId = {};
+    assets.forEach((asset) => {
+      if (asset.apiId) {
+        assetsByApiId[asset.apiId] = asset;
+      }
+    });
+
+    const apiIds = Object.keys(assetsByApiId);
+
+    if (apiIds.length === 0) {
+      console.log("No assets with valid API IDs found");
+      return;
+    }
+
+    console.log(`Found ${apiIds.length} assets with API IDs`);
+
+    const BATCH_SIZE = 30;
+    const batches = [];
+    for (let i = 0; i < apiIds.length; i += BATCH_SIZE) {
+      batches.push(apiIds.slice(i, i + BATCH_SIZE));
+    }
+
+    let updatedCount = 0;
+    let errorCount = 0;
+
+    for (let i = 0; i < batches.length; i++) {
+      const batch = batches[i];
+      console.log(
+        `Processing crypto batch ${i + 1}/${batches.length} (${
+          batch.length
+        } assets)...`,
+      );
+
+      try {
+        const batchResults = await processCryptoBatch(batch, assetsByApiId);
+        updatedCount += batchResults.updatedCount;
+        errorCount += batchResults.errorCount;
+
+        if (i < batches.length - 1) {
+          console.log(
+            `Waiting ${REQUEST_DELAY / 1000} seconds before next batch...`,
+          );
+          await delay(REQUEST_DELAY);
+        }
+      } catch (batchError) {
+        console.error(`Crypto batch ${i + 1} failed:`, batchError.message);
+        errorCount += batch.length;
+      }
+    }
+
+    const endTime = Date.now();
+    const duration = ((endTime - startTime) / 1000).toFixed(2);
+
+    console.log(
+      `Crypto update completed in ${duration}s: ${updatedCount} updated, ${errorCount} errors`,
+    );
+  } catch (error) {
+    console.error("Crypto asset data update failed:", error.message);
+    throw error;
+  }
+}
+
+async function updateStockAssets() {
+  console.log("Starting stock asset update...");
+  const startTime = Date.now();
+
+  try {
+    const assets = await Asset.find({
+      type: "stock",
+      isActive: true,
+    }).limit(250);
+
+    if (assets.length === 0) {
+      console.log("No active stock assets found to update");
+      return;
+    }
+
+    console.log(`Updating ${assets.length} stock assets...`);
+
+    const stocksBySymbol = {};
+    assets.forEach((asset) => {
+      if (asset.symbol) {
+        stocksBySymbol[asset.symbol] = asset;
+      }
+    });
+
+    const symbols = Object.keys(stocksBySymbol);
+
+    if (symbols.length === 0) {
+      console.log("No stocks with valid symbols found");
+      return;
+    }
+
+    console.log(`Found ${symbols.length} stocks to update`);
+
+    const STOCK_BATCH_SIZE = 10;
+    const batches = [];
+    for (let i = 0; i < symbols.length; i += STOCK_BATCH_SIZE) {
+      batches.push(symbols.slice(i, i + STOCK_BATCH_SIZE));
+    }
+
+    let updatedCount = 0;
+    let errorCount = 0;
+
+    for (let i = 0; i < batches.length; i++) {
+      const batch = batches[i];
+      console.log(
+        `Processing stock batch ${i + 1}/${batches.length} (${
+          batch.length
+        } stocks)...`,
+      );
+
+      try {
+        const batchResults = await processStockBatch(batch, stocksBySymbol);
+        updatedCount += batchResults.updatedCount;
+        errorCount += batchResults.errorCount;
+
+        if (i < batches.length - 1) {
+          await delay(2000);
+        }
+      } catch (batchError) {
+        console.error(`Stock batch ${i + 1} failed:`, batchError.message);
+        errorCount += batch.length;
+      }
+    }
+
+    const endTime = Date.now();
+    const duration = ((endTime - startTime) / 1000).toFixed(2);
+
+    console.log(
+      `Stock update completed in ${duration}s: ${updatedCount} updated, ${errorCount} errors`,
+    );
+  } catch (error) {
+    console.error("Stock asset data update failed:", error.message);
+    throw error;
+  }
+}
+
+async function processStockBatch(symbols, stocksBySymbol) {
+  let updatedCount = 0;
+  let errorCount = 0;
+
+  const FMP_API_KEY = process.env.FMP_API_KEY;
+  const FMP_BASE_URL = "https://financialmodelingprep.com/api/v3";
+
+  try {
+    const symbolsParam = symbols.join(",");
+    const quoteUrl = `${FMP_BASE_URL}/quote/${symbolsParam}`;
+
+    const response = await axios.get(quoteUrl, {
+      params: {
+        apikey: FMP_API_KEY,
+      },
+      timeout: 15000,
+    });
+
+    if (response.data && Array.isArray(response.data)) {
+      for (const quote of response.data) {
+        const asset = stocksBySymbol[quote.symbol];
+
+        if (asset && quote) {
+          try {
+            const updateData = {
+              "priceData.current": quote.price || asset.priceData.current,
+              "priceData.open": quote.open,
+              "priceData.previousClose": quote.previousClose,
+              "priceData.dayLow": quote.dayLow,
+              "priceData.dayHigh": quote.dayHigh,
+              "priceData.change": quote.change,
+              "priceData.changePercent": quote.changesPercentage,
+              "priceData.volume": quote.volume,
+              "priceData.avgVolume": quote.avgVolume,
+              "historical.yearLow": quote.yearLow,
+              "historical.yearHigh": quote.yearHigh,
+              "fundamentals.marketCap":
+                quote.marketCap || asset.fundamentals.marketCap,
+              "fundamentals.pe": quote.pe || asset.fundamentals.pe,
+              lastUpdated: new Date(),
+            };
+
+            await Asset.findByIdAndUpdate(asset._id, updateData);
+            updatedCount++;
+            console.log(`✅ Updated stock: ${quote.symbol} - $${quote.price}`);
+          } catch (err) {
+            console.error(`Error updating stock ${quote.symbol}:`, err.message);
+            errorCount++;
+          }
+        }
+      }
+    }
+
+    for (const symbol of symbols) {
+      const asset = stocksBySymbol[symbol];
+      if (asset && !response.data.find((q) => q.symbol === symbol)) {
+        console.log(`⚠️ No data found for stock: ${symbol}`);
+        errorCount++;
+      }
+    }
+  } catch (error) {
+    console.error("Error fetching stock data:", error.message);
+    errorCount += symbols.length;
+  }
+
+  return { updatedCount, errorCount };
+}
+
+async function processCryptoBatch(apiIds, assetsByApiId) {
+  let updatedCount = 0;
+  let errorCount = 0;
+
+  try {
+    const response = await axios.get(`${COIN_GECKO_API_URL}/coins/markets`, {
+      params: {
+        vs_currency: VS_CURRENCY,
+        ids: apiIds.join(","), // Use CoinGecko IDs, not symbols
+        order: "market_cap_desc",
+        price_change_percentage: "24h,7d,30d,1y",
+        sparkline: false,
+      },
+      timeout: 30000,
+    });
+
+    const marketData = response.data;
+
+    // Create a map for quick lookup
+    const marketDataMap = {};
+    marketData.forEach((item) => {
+      marketDataMap[item.id] = item;
+    });
+
+    // Process each asset in the batch
+    for (const apiId of apiIds) {
+      try {
+        const asset = assetsByApiId[apiId];
+        const cryptoData = marketDataMap[apiId];
+
+        if (!cryptoData) {
+          console.warn(
+            `No market data found for ${apiId} (${asset?.symbol || "unknown"})`,
+          );
+          errorCount++;
+          continue;
+        }
+
+        const updateFields = {
+          "priceData.current": cryptoData.current_price,
+          "priceData.open": cryptoData.low_24h,
+          "priceData.previousClose": cryptoData.ath || cryptoData.current_price,
+          "priceData.dayLow": cryptoData.low_24h,
+          "priceData.dayHigh": cryptoData.high_24h,
+          "priceData.change": cryptoData.price_change_24h,
+          "priceData.changePercent": cryptoData.price_change_percentage_24h,
+          "priceData.volume": cryptoData.total_volume,
+          "priceData.avgVolume": cryptoData.total_volume,
+          "fundamentals.marketCap": cryptoData.market_cap,
+          lastUpdated: new Date(),
+        };
+
+        // Only update historical data if we have meaningful values
+        if (cryptoData.atl) {
+          updateFields["historical.yearLow"] = cryptoData.atl;
+        }
+        if (cryptoData.ath) {
+          updateFields["historical.yearHigh"] = cryptoData.ath;
+        }
+
+        // Clean null/undefined values
+        Object.keys(updateFields).forEach((key) => {
+          if (updateFields[key] === null || updateFields[key] === undefined) {
+            delete updateFields[key];
+          }
+        });
+
+        const result = await Asset.updateOne(
+          { _id: asset._id }, // Use _id for more reliable updates
+          { $set: updateFields },
+        );
+
+        if (result.modifiedCount > 0) {
+          updatedCount++;
+          console.log(
+            `Updated ${asset.symbol} - $${
+              cryptoData.current_price?.toFixed(2) || "N/A"
+            }`,
+          );
+        } else {
+          console.log(`No changes for ${asset.symbol}`);
+        }
+      } catch (assetError) {
+        console.error(`Error updating ${apiId}:`, assetError.message);
+        errorCount++;
+      }
+    }
+
+    // Log missing assets that were in the batch but not returned
+    const returnedApiIds = marketData.map((item) => item.id);
+    const missingApiIds = apiIds.filter(
+      (apiId) => !returnedApiIds.includes(apiId),
+    );
+
+    for (const missingApiId of missingApiIds) {
+      const asset = assetsByApiId[missingApiId];
+      console.warn(
+        `No market data returned for ${missingApiId} (${
+          asset?.symbol || "unknown"
+        })`,
+      );
+      errorCount++;
+    }
+  } catch (error) {
+    console.error("Batch API call failed:", error.message);
+
+    if (error.response?.status === 429) {
+      console.log("Rate limited, waiting 30 seconds before retry...");
+      await delay(30000);
+      // Optionally retry this batch
+      return processAssetBatch(apiIds, assetsByApiId);
+    }
+
+    errorCount += apiIds.length;
+    throw error;
+  }
+
+  return { updatedCount, errorCount };
+}
+
+const isMarketOpen = () => {
+  const now = new Date();
+  const estTime = new Date(
+    now.toLocaleString("en-US", { timeZone: "America/New_York" }),
+  );
+  const hour = estTime.getHours();
+  const day = estTime.getDay();
+
+  // Weekday and between 9:30 AM - 4:00 PM EST
+  return day >= 1 && day <= 5 && hour >= 9.5 && hour < 16;
+};
+
+async function fetchAssetsWithRetry(assetSymbols, maxRetries = 3) {
+  if (!assetSymbols || assetSymbols.length === 0) {
+    console.log("No asset symbols provided");
+    return [];
+  }
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      console.log(
+        `Fetching assets for ${assetSymbols.length} symbols (attempt ${attempt}/${maxRetries})...`,
+      );
+
+      const assets = await Asset.find({
+        symbol: { $in: assetSymbols.map((s) => s.toUpperCase()) },
+        isActive: true,
+      }).lean();
+
+      const fetchedSymbols = assets
+        .map((a) => a.symbol?.toUpperCase())
+        .filter(Boolean);
+
+      const missingSymbols = assetSymbols.filter(
+        (symbol) => !fetchedSymbols.includes(symbol.toUpperCase()),
+      );
+
+      if (missingSymbols.length > 0) {
+        console.log(
+          `⚠️ Missing data for symbols: ${missingSymbols.join(", ")}`,
+        );
+
+        if (attempt < maxRetries) {
+          const delay = 1000 * Math.pow(2, attempt - 1); // Exponential backoff: 1s, 2s, 4s
+          console.log(`Retrying in ${delay / 1000}s...`);
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          continue;
+        } else {
+          console.warn(
+            `Could not fetch ${missingSymbols.length} symbols after ${maxRetries} attempts`,
+          );
+        }
+      }
+
+      console.log(`Successfully fetched ${assets.length} assets`);
+      return assets;
+    } catch (error) {
+      console.error(`Attempt ${attempt} failed:`, error.message);
+      if (attempt < maxRetries) {
+        const delay = 1000 * Math.pow(2, attempt - 1);
+        console.log(`Retrying in ${delay / 1000}s...`);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      } else {
+        console.error(`Failed to fetch assets after ${maxRetries} attempts`);
+        throw error;
+      }
+    }
+  }
+
+  return [];
+}
+
+async function updateWalletPerformance() {
+  console.log("Starting optimized Wallet performance update...");
+  const startTime = Date.now();
+
+  try {
+    const walletUpdates = await Trade.aggregate([
+      {
+        $match: {
+          status: "open",
+          "wallet.id": { $ne: null },
+        },
+      },
+      {
+        $lookup: {
+          from: "wallets",
+          localField: "wallet.id",
+          foreignField: "_id",
+          as: "walletInfo",
+        },
+      },
+      {
+        $unwind: {
+          path: "$walletInfo",
+          preserveNullAndEmptyArrays: false,
+        },
+      },
+      {
+        $group: {
+          _id: "$wallet.id",
+          userId: { $first: "$userId" },
+          totalTodayReturn: { $sum: "$performance.todayReturn" },
+          totalInvestment: { $sum: "$execution.amount" },
+          tradeCount: { $sum: 1 },
+        },
+      },
+      {
+        $project: {
+          walletId: "$_id",
+          userId: 1,
+          totalTodayReturn: 1,
+          totalInvestment: 1,
+          tradeCount: 1,
+          dailyProfitPercent: {
+            $cond: {
+              if: { $gt: ["$totalInvestment", 0] },
+              then: {
+                $multiply: [
+                  { $divide: ["$totalTodayReturn", "$totalInvestment"] },
+                  100,
+                ],
+              },
+              else: 0,
+            },
+          },
+        },
+      },
+    ]);
+
+    console.log(`Processing ${walletUpdates.length} wallets with trades`);
+
+    if (walletUpdates.length === 0) {
+      // No wallets with trades, reset all
+      await Wallet.updateMany(
+        {},
+        {
+          $set: {
+            dailyProfit: 0,
+            dailyProfitPercent: 0,
+          },
+        },
+      );
+    } else {
+      // Prepare bulk operations
+      const bulkOps = walletUpdates.map((item) => ({
+        updateOne: {
+          filter: {
+            _id: item.walletId,
+            userId: item.userId,
+          },
+          update: {
+            $set: {
+              dailyProfit: item.totalTodayReturn,
+              dailyProfitPercent: item.dailyProfitPercent,
+            },
+          },
+        },
+      }));
+
+      // Execute bulk write
+      const bulkResult = await Wallet.bulkWrite(bulkOps, { ordered: false });
+
+      // Reset wallets without trades
+      const walletIdsUpdated = walletUpdates.map((item) => item.walletId);
+      const resetResult = await Wallet.updateMany(
+        {
+          _id: { $nin: walletIdsUpdated },
+        },
+        {
+          $set: {
+            dailyProfit: 0,
+            dailyProfitPercent: 0,
+          },
+        },
+      );
+
+      console.log(
+        `Updated ${bulkResult.modifiedCount} wallets, reset ${resetResult.modifiedCount} wallets`,
+      );
+    }
+
+    const duration = Date.now() - startTime;
+    const msg = `Optimized update completed in ${duration}ms.`;
+    logEvent(msg, "cron.txt");
+  } catch (error) {
+    console.error("Error in optimized updateWalletPerformance:", error);
+    throw error;
+  }
+}
+
+const calculateTradeValue = (trade, currentPrice) => {
+  const entryPrice = parseFloat(trade.execution?.price) || 0;
+  const quantity = parseFloat(trade.execution?.quantity) || 0;
+  const marginAmount = parseFloat(trade.execution?.amount) || 0;
+  const positionAmount =
+    parseFloat(trade.execution?.positionAmount) || marginAmount;
+  const leverage = parseFloat(trade.execution?.leverage) || 1;
+  const extra = parseFloat(trade.extra) || 0;
+  const isLeveraged = leverage > 1;
+  const isBuy = trade.orderType === "buy";
+
+  if (quantity === 0 || entryPrice === 0 || marginAmount === 0) {
+    return {
+      currentValue: marginAmount + extra,
+      totalReturn: extra,
+      totalReturnPercent: marginAmount > 0 ? (extra / marginAmount) * 100 : 0,
+    };
+  }
+
+  let currentValue;
+
+  if (isLeveraged) {
+    // Leveraged: P/L is calculated on the full position size
+    const priceChangePercent = isBuy
+      ? ((currentPrice - entryPrice) / entryPrice) * 100
+      : ((entryPrice - currentPrice) / entryPrice) * 100;
+
+    const positionReturn = (priceChangePercent / 100) * positionAmount;
+    currentValue = marginAmount + positionReturn;
+  } else {
+    // Non-leveraged
+    if (isBuy) {
+      currentValue = quantity * currentPrice;
+    } else {
+      // Short
+      const priceDifference = entryPrice - currentPrice;
+      const profit = priceDifference * quantity;
+      currentValue = marginAmount + profit;
+    }
+  }
+
+  // Always add extra (bonus / adjustment)
+  const totalCurrentValue = currentValue + extra;
+  const totalReturn = totalCurrentValue - marginAmount;
+  const totalReturnPercent =
+    marginAmount > 0 ? (totalReturn / marginAmount) * 100 : 0;
+
+  return {
+    currentValue: totalCurrentValue,
+    totalReturn,
+    totalReturnPercent,
+  };
+};
+
+const updateTradePerformance = async () => {
+  try {
+    console.log("Starting trade performance update...");
+
+    const startTime = Date.now();
+
+    const openTrades = await Trade.find(
+      {
+        status: "open",
+        "asset.symbol": { $exists: true, $ne: null },
+      },
+      {
+        assetType: 1,
+        "asset.symbol": 1,
+
+        "execution.price": 1,
+        "execution.quantity": 1,
+        "execution.amount": 1,
+        "execution.leverage": 1,
+        "execution.positionAmount": 1,
+        "execution.type": 1,
+
+        "performance.totalReturn": 1,
+        "performance.todayReturn": 1,
+        "performance.todayReturnPercent": 1,
+        "performance.todayMarketReturn": 1,
+        "performance.todayExtra": 1,
+        "performance.todayStartValue": 1,
+        "performance.todayStartDate": 1,
+        "performance.currentValue": 1,
+        "performance.currentPrice": 1,
+        "performance.previousClose": 1,
+
+        "targets.takeProfit": 1,
+        "targets.stopLoss": 1,
+
+        orderType: 1,
+        extra: 1,
+        "wallet.id": 1,
+        createdAt: 1,
+        userId: 1,
+      },
+    ).lean();
+
+    if (openTrades.length === 0) {
+      console.log("No open trades found.");
+      return;
+    }
+
+    const stockTrades = openTrades.filter(
+      (trade) => trade.assetType === "stock",
+    );
+
+    if (stockTrades.length > 0 && !isMarketOpen()) {
+      console.log("Stock market is closed, using last known prices");
+    }
+
+    console.log(`Found ${openTrades.length} open trades to update.`);
+
+    // ==========================================
+    // COLLECT UNIQUE SYMBOLS
+    // ==========================================
+
+    const assetSymbols = [];
+    const symbolSet = new Set();
+
+    for (const trade of openTrades) {
+      if (trade.asset?.symbol) {
+        const symbol = trade.asset.symbol.toUpperCase();
+
+        if (!symbolSet.has(symbol)) {
+          symbolSet.add(symbol);
+          assetSymbols.push(symbol);
+        }
+      }
+    }
+
+    if (assetSymbols.length === 0) {
+      console.log("No assets found in open trades.");
+      return;
+    }
+
+    console.log(`Fetching current prices for ${assetSymbols.length} assets...`);
+
+    let currentAssets;
+
+    try {
+      currentAssets = await fetchAssetsWithRetry(assetSymbols);
+    } catch (error) {
+      console.error("Error fetching assets after retries:", error.message);
+
+      return;
+    }
+
+    // ==========================================
+    // PRICE MAP
+    // ==========================================
+
+    const assetPriceMap = new Map();
+
+    for (const asset of currentAssets) {
+      if (asset?.symbol) {
+        assetPriceMap.set(asset.symbol.toUpperCase(), {
+          current: asset?.priceData?.current || 0,
+          previousClose: asset?.priceData?.previousClose || 0,
+        });
+      }
+    }
+
+    // ==========================================
+    // PREPARE UPDATES
+    // ==========================================
+
+    const tradeUpdates = [];
+    const tradesToClose = [];
+
+    const now = new Date();
+
+    // Start of current day
+    const todayStart = new Date(now);
+    todayStart.setHours(0, 0, 0, 0);
+
+    for (const trade of openTrades) {
+      const symbol = trade.asset?.symbol?.toUpperCase();
+
+      if (!symbol) continue;
+
+      const assetData = assetPriceMap.get(symbol);
+
+      if (!assetData) continue;
+
+      const currentPrice = assetData.current;
+      const previousClose = assetData.previousClose;
+
+      if (!currentPrice || currentPrice <= 0) continue;
+
+      // ==========================================
+      // TOTAL PERFORMANCE
+      // ==========================================
+
+      const result = calculateTradeValue(trade, currentPrice);
+
+      const totalCurrentValue = result.currentValue;
+      const totalReturn = result.totalReturn;
+      const totalReturnPercent = result.totalReturnPercent;
+
+      // ==========================================
+      // TODAY PERFORMANCE
+      // ==========================================
+
+      const currentMarketValue = totalCurrentValue;
+
+      const executionAmount = Number(trade.execution?.amount) || 0;
+
+      const createdAt = trade.createdAt ? new Date(trade.createdAt) : null;
+
+      const openedToday =
+        createdAt &&
+        createdAt.getFullYear() === now.getFullYear() &&
+        createdAt.getMonth() === now.getMonth() &&
+        createdAt.getDate() === now.getDate();
+
+      /*
+       * todayStartValue represents the MARKET VALUE
+       * at the beginning of the current day.
+       *
+       * For a trade opened today, its starting market
+       * value is its entry amount.
+       *
+       * For an older trade, we use the stored daily
+       * baseline.
+       */
+
+      let todayStartValue = Number(trade.performance?.todayStartValue);
+
+      const storedStartDate = trade.performance?.todayStartDate
+        ? new Date(trade.performance.todayStartDate)
+        : null;
+
+      const hasValidStartDate =
+        storedStartDate && !Number.isNaN(storedStartDate.getTime());
+
+      const startDateIsToday =
+        hasValidStartDate &&
+        storedStartDate.getFullYear() === now.getFullYear() &&
+        storedStartDate.getMonth() === now.getMonth() &&
+        storedStartDate.getDate() === now.getDate();
+
+      /*
+       * Initialize today's baseline when:
+       *
+       * 1. There is no baseline yet
+       * 2. The stored baseline belongs to another day
+       */
+
+      if (!Number.isFinite(todayStartValue) || !startDateIsToday) {
+        if (openedToday) {
+          // Trade opened today:
+          // start today's return from the amount invested.
+          todayStartValue = executionAmount;
+        } else {
+          /*
+           * Existing trade entering a new day.
+           *
+           * At the first cron run of the new day,
+           * the current market value becomes the new
+           * daily baseline.
+           */
+          todayStartValue = currentMarketValue;
+        }
+      }
+
+      // ==========================================
+      // TODAY MARKET RETURN
+      // ==========================================
+
+      const todayMarketReturn = currentMarketValue - todayStartValue;
+
+      // ==========================================
+      // TODAY EXTRA
+      // ==========================================
+
+      /*
+       * todayExtra is maintained separately by
+       * editPositionData() when an extra bonus is added.
+       *
+       * The cron must NOT derive it from `extra`,
+       * because `extra` may contain bonuses from
+       * previous days.
+       */
+
+      const todayExtra = Number(trade.performance?.todayExtra || 0);
+
+      // ==========================================
+      // TODAY TOTAL RETURN
+      // ==========================================
+
+      const todayReturn = todayMarketReturn + todayExtra;
+
+      const todayReturnPercent =
+        executionAmount > 0 ? (todayReturn / executionAmount) * 100 : 0;
+
+      // ==========================================
+      // TP / SL CHECK
+      // ==========================================
+
+      const shouldCloseByTP =
+        trade.targets?.takeProfit &&
+        totalReturnPercent >= trade.targets.takeProfit;
+
+      const shouldCloseBySL =
+        trade.targets?.stopLoss && totalReturnPercent <= trade.targets.stopLoss;
+
+      if (shouldCloseByTP || shouldCloseBySL) {
+        tradesToClose.push({
+          trade,
+          currentValue: totalCurrentValue,
+          totalReturn,
+          totalReturnPercent,
+          closeReason: shouldCloseByTP ? "take_profit" : "stop_loss",
+        });
+      }
+
+      // ==========================================
+      // PREPARE UPDATE
+      // ==========================================
+
+      tradeUpdates.push({
+        updateOne: {
+          filter: {
+            _id: trade._id,
+          },
+
+          update: {
+            $set: {
+              // ------------------------------
+              // Total performance
+              // ------------------------------
+
+              "performance.totalReturn": parseFloat(totalReturn.toFixed(4)),
+
+              "performance.totalReturnPercent": parseFloat(
+                totalReturnPercent.toFixed(4),
+              ),
+
+              // ------------------------------
+              // Today's performance
+              // ------------------------------
+
+              "performance.todayStartValue": parseFloat(
+                todayStartValue.toFixed(4),
+              ),
+
+              "performance.todayStartDate": todayStart,
+
+              "performance.todayMarketReturn": parseFloat(
+                todayMarketReturn.toFixed(4),
+              ),
+
+              "performance.todayExtra": parseFloat(todayExtra.toFixed(4)),
+
+              "performance.todayReturn": parseFloat(todayReturn.toFixed(4)),
+
+              "performance.todayReturnPercent": parseFloat(
+                todayReturnPercent.toFixed(4),
+              ),
+
+              // ------------------------------
+              // Current price/value
+              // ------------------------------
+
+              "performance.currentValue": parseFloat(
+                totalCurrentValue.toFixed(4),
+              ),
+
+              "performance.currentPrice": parseFloat(currentPrice.toFixed(4)),
+
+              "performance.previousClose": parseFloat(previousClose.toFixed(4)),
+
+              updatedAt: now,
+            },
+          },
+        },
+      });
+    }
+
+    // ==========================================
+    // BULK UPDATE
+    // ==========================================
+
+    if (tradeUpdates.length > 0) {
+      const BATCH_SIZE = 500;
+
+      for (let i = 0; i < tradeUpdates.length; i += BATCH_SIZE) {
+        const batch = tradeUpdates.slice(i, i + BATCH_SIZE);
+
+        try {
+          await Trade.bulkWrite(batch, {
+            ordered: false,
+          });
+
+          console.log(
+            `Updated ${batch.length} trades in batch ${
+              Math.floor(i / BATCH_SIZE) + 1
+            }`,
+          );
+        } catch (batchError) {
+          console.error(
+            `Error in batch ${Math.floor(i / BATCH_SIZE) + 1}:`,
+            batchError.message,
+          );
+        }
+      }
+    }
+
+    // ==========================================
+    // CLOSE TP / SL TRADES
+    // ==========================================
+
+    if (tradesToClose.length > 0) {
+      console.log(`Closing ${tradesToClose.length} trades (TP/SL reached)`);
+
+      await closeTradesInBatch(tradesToClose, now);
+    }
+
+    const duration = Date.now() - startTime;
+
+    console.log(`Trade performance update completed in ${duration}ms.`);
+  } catch (error) {
+    console.error("Error in updateTradePerformance:", error);
+
+    throw error;
+  }
+};
+
+const updatePositionsPerformance = async () => {
+  try {
+    const startTime = Date.now();
+
+    const openPositions = await Position.find(
+      {
+        status: "open",
+        "asset.symbol": { $exists: true, $ne: null },
+      },
+      {
+        userId: 1,
+        "wallet.id": 1,
+        "asset.symbol": 1,
+
+        quantity: 1,
+        amountInvested: 1,
+
+        "performance.currentValue": 1,
+        "performance.currentBaseValue": 1,
+        "performance.extra": 1, // ← corrected (was currentExtra)
+
+        "performance.currentPrice": 1,
+        "performance.previousClose": 1,
+
+        "performance.totalReturn": 1,
+        "performance.totalReturnPercent": 1,
+
+        "performance.todayStartValue": 1,
+        "performance.todayStartDate": 1,
+        "performance.todayMarketReturn": 1,
+        "performance.todayExtra": 1,
+        "performance.todayReturn": 1,
+        "performance.todayReturnPercent": 1,
+
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    ).lean();
+
+    if (openPositions.length === 0) {
+      console.log("No open positions found.");
+      return;
+    }
+
+    /**
+     * UNIQUE SYMBOLS
+     */
+    const assetSymbols = [
+      ...new Set(
+        openPositions
+          .map((p) => p.asset?.symbol?.toUpperCase())
+          .filter(Boolean),
+      ),
+    ];
+
+    /**
+     * FETCH MARKET DATA
+     */
+    let currentAssets;
+
+    try {
+      currentAssets = await fetchAssetsWithRetry(assetSymbols);
+    } catch (error) {
+      console.error("Error fetching assets:", error.message);
+      return;
+    }
+
+    /**
+     * MAP:
+     * SYMBOL => { current, previousClose }
+     */
+    const assetPriceMap = new Map();
+
+    for (const asset of currentAssets) {
+      if (asset?.symbol) {
+        assetPriceMap.set(asset.symbol.toUpperCase(), {
+          current: asset?.priceData?.current || 0,
+          previousClose: asset?.priceData?.previousClose || 0,
+        });
+      }
+    }
+
+    const affectedWalletIds = new Set();
+    const affectedUserIds = new Set();
+    const positionUpdates = [];
+    const now = new Date();
+
+    /**
+     * START OF CURRENT DAY
+     */
+    const todayStart = new Date(now);
+    todayStart.setHours(0, 0, 0, 0);
+
+    /**
+     * UPDATE POSITIONS
+     */
+    for (const position of openPositions) {
+      affectedUserIds.add(position.userId.toString());
+
+      if (position.wallet?.id) {
+        affectedWalletIds.add(position.wallet.id.toString());
+      }
+
+      const symbol = position.asset?.symbol?.toUpperCase();
+      if (!symbol) continue;
+
+      const assetData = assetPriceMap.get(symbol);
+      if (!assetData) {
+        console.warn(`No price found for ${symbol}`);
+        continue;
+      }
+
+      const currentPrice = assetData.current;
+      const previousClose = assetData.previousClose;
+
+      if (!currentPrice || currentPrice <= 0) {
+        continue;
+      }
+
+      const quantity = Number(position.quantity) || 0;
+      const amountInvested = Number(position.amountInvested) || 0;
+
+      /**
+       * ==========================================
+       * CURRENT MARKET VALUE (pure)
+       * ==========================================
+       *
+       * Value of the actual asset before any bonus/extra.
+       */
+      const currentBaseValue = quantity * currentPrice;
+
+      /**
+       * ==========================================
+       * CURRENT EXTRA
+       * ==========================================
+       *
+       * This is the accumulated extra/bonus on the position.
+       * Schema field is "extra", NOT "currentExtra".
+       */
+      const currentExtra = Number(position.performance?.extra) || 0;
+
+      /**
+       * ==========================================
+       * CURRENT TOTAL VALUE
+       * ==========================================
+       */
+      const currentValue = currentBaseValue + currentExtra;
+
+      /**
+       * ==========================================
+       * TOTAL RETURN
+       * ==========================================
+       */
+      const totalReturn = currentValue - amountInvested;
+
+      const totalReturnPercent =
+        amountInvested > 0 ? (totalReturn / amountInvested) * 100 : 0;
+
+      /**
+       * ==========================================
+       * TODAY BASELINE
+       * ==========================================
+       *
+       * todayStartValue = market value at the beginning of the day.
+       * It deliberately EXCLUDES extra.
+       */
+      const positionDate = new Date(position.createdAt);
+
+      const isOpenedToday =
+        positionDate.getFullYear() === now.getFullYear() &&
+        positionDate.getMonth() === now.getMonth() &&
+        positionDate.getDate() === now.getDate();
+
+      let todayStartValue = Number(position.performance?.todayStartValue);
+
+      const storedStartDate = position.performance?.todayStartDate
+        ? new Date(position.performance.todayStartDate)
+        : null;
+
+      const hasValidStartDate =
+        storedStartDate && !Number.isNaN(storedStartDate.getTime());
+
+      const startDateIsToday =
+        hasValidStartDate &&
+        storedStartDate.getFullYear() === now.getFullYear() &&
+        storedStartDate.getMonth() === now.getMonth() &&
+        storedStartDate.getDate() === now.getDate();
+
+      /**
+       * Initialize today's baseline if:
+       * - there is no baseline
+       * - baseline belongs to another day
+       */
+      if (!Number.isFinite(todayStartValue) || !startDateIsToday) {
+        if (isOpenedToday) {
+          // Position opened today → start from amount invested
+          todayStartValue = amountInvested;
+        } else {
+          // Existing position entering a new day → use current market base
+          todayStartValue = currentBaseValue;
+        }
+      }
+
+      /**
+       * ==========================================
+       * TODAY MARKET RETURN
+       * ==========================================
+       *
+       * ONLY market movement. Extra is excluded.
+       */
+      const todayMarketReturn = currentBaseValue - todayStartValue;
+
+      /**
+       * ==========================================
+       * TODAY EXTRA
+       * ==========================================
+       *
+       * Maintained by editPositionData() when extra is added.
+       */
+      const todayExtra = Number(position.performance?.todayExtra) || 0;
+
+      /**
+       * ==========================================
+       * TODAY TOTAL RETURN
+       * ==========================================
+       */
+      const todayReturn = todayMarketReturn + todayExtra;
+
+      const todayReturnPercent =
+        amountInvested > 0 ? (todayReturn / amountInvested) * 100 : 0;
+
+      /**
+       * ==========================================
+       * PREPARE UPDATE
+       * ==========================================
+       */
+      positionUpdates.push({
+        updateOne: {
+          filter: {
+            _id: position._id,
+          },
+          update: {
+            $set: {
+              // ------------------------------
+              // CURRENT VALUE
+              // ------------------------------
+              "performance.currentBaseValue": Number(
+                currentBaseValue.toFixed(4),
+              ),
+              "performance.extra": Number(currentExtra.toFixed(4)), // ← corrected
+              "performance.currentValue": Number(currentValue.toFixed(4)),
+
+              // ------------------------------
+              // TOTAL PERFORMANCE
+              // ------------------------------
+              "performance.totalReturn": Number(totalReturn.toFixed(4)),
+              "performance.totalReturnPercent": Number(
+                totalReturnPercent.toFixed(4),
+              ),
+
+              // ------------------------------
+              // TODAY PERFORMANCE
+              // ------------------------------
+              "performance.todayStartValue": Number(todayStartValue.toFixed(4)),
+              "performance.todayStartDate": todayStart,
+              "performance.todayMarketReturn": Number(
+                todayMarketReturn.toFixed(4),
+              ),
+              "performance.todayExtra": Number(todayExtra.toFixed(4)),
+              "performance.todayReturn": Number(todayReturn.toFixed(4)),
+              "performance.todayReturnPercent": Number(
+                todayReturnPercent.toFixed(4),
+              ),
+
+              // ------------------------------
+              // MARKET DATA
+              // ------------------------------
+              "performance.currentPrice": Number(currentPrice.toFixed(4)),
+              "performance.previousClose": Number(previousClose.toFixed(4)),
+
+              updatedAt: now,
+            },
+          },
+        },
+      });
+    }
+
+    /**
+     * ==========================================
+     * BULK UPDATE
+     * ==========================================
+     */
+    if (positionUpdates.length > 0) {
+      const BATCH_SIZE = 500;
+
+      for (let i = 0; i < positionUpdates.length; i += BATCH_SIZE) {
+        const batch = positionUpdates.slice(i, i + BATCH_SIZE);
+
+        await Position.bulkWrite(batch, {
+          ordered: false,
+        });
+
+        console.log(
+          `Updated ${batch.length} positions in batch ${
+            Math.floor(i / BATCH_SIZE) + 1
+          }`,
+        );
+      }
+    }
+
+    /**
+     * ==========================================
+     * SNAPSHOTS
+     * ==========================================
+     */
+    const snapshotTime = new Date();
+
+    console.log(affectedUserIds.size, "userIds");
+    console.log(affectedWalletIds.size, "walletIds");
+
+    /**
+     * WALLET SNAPSHOTS
+     */
+    const walletResults = await Promise.allSettled(
+      [...affectedWalletIds].map((walletId) =>
+        walletSnapshotService.createWalletSnapshot(
+          walletId,
+          "cron_update",
+          {
+            timestamp: snapshotTime,
+          },
+          null,
+        ),
+      ),
+    );
+
+    walletResults.forEach((result, index) => {
+      if (result.status === "rejected") {
+        console.error(
+          `Failed to create wallet snapshot for ${
+            [...affectedWalletIds][index]
+          }:`,
+          result.reason,
+        );
+      }
+    });
+
+    /**
+     * PORTFOLIO SNAPSHOTS
+     */
+    const portfolioResults = await Promise.allSettled(
+      [...affectedUserIds].map((userId) =>
+        portfolioService.createPortfolioSnapshot(
+          userId,
+          "cron_update",
+          {
+            timestamp: snapshotTime,
+          },
+          null,
+        ),
+      ),
+    );
+
+    portfolioResults.forEach((result, index) => {
+      if (result.status === "rejected") {
+        console.error(
+          `Failed to create portfolio snapshot for ${
+            [...affectedUserIds][index]
+          }:`,
+          result.reason,
+        );
+      }
+    });
+
+    const duration = Date.now() - startTime;
+
+    console.log(
+      `Position performance update completed in ${duration}ms. Updated ${positionUpdates.length} positions`,
+    );
+  } catch (error) {
+    console.error("Error in updatePositionsPerformance:", error);
+    throw error;
+  }
+};
+
+async function closeTradesInBatch(tradesToClose, closeTime) {
+  const session = await mongoose.startSession();
+
+  try {
+    session.startTransaction();
+
+    const closePromises = tradesToClose.map(
+      async ({ trade, currentValue, totalReturn, closeReason }) => {
+        try {
+          await Trade.updateOne(
+            { _id: trade._id },
+            {
+              $set: {
+                status: "closed",
+                closedAt: closeTime,
+                closeReason: closeReason,
+                "targets.exitPoint":
+                  trade.performance?.currentValue || currentValue,
+              },
+            },
+            { session },
+          );
+
+          if (trade.wallet?.id) {
+            await Wallet.updateOne(
+              { _id: trade.wallet.id },
+              {
+                $inc: {
+                  availableBalance: currentValue,
+                  totalBalance: totalReturn,
+                },
+              },
+              { session },
+            );
+          }
+
+          await recordTradeInPortfolio(
+            trade.userId,
+            totalReturn,
+            `Trade closed (${closeReason}): ${trade.asset.symbol} ${
+              trade.orderType
+            } - ${totalReturn >= 0 ? "Profit" : "Loss"} of $${Math.abs(
+              totalReturn,
+            ).toFixed(2)}`,
+          );
+
+          return { tradeId: trade._id, success: true };
+        } catch (error) {
+          console.error(`Error closing trade ${trade._id}:`, error.message);
+          return { tradeId: trade._id, success: false, error: error.message };
+        }
+      },
+    );
+
+    const results = await Promise.all(closePromises);
+    const successful = results.filter((r) => r.success).length;
+    const failed = results.filter((r) => !r.success).length;
+
+    console.log(`Closed ${successful} trades successfully, ${failed} failed`);
+
+    await session.commitTransaction();
+
+    const failedTrades = results.filter((r) => !r.success);
+    if (failedTrades.length > 0) {
+      console.log(
+        "Failed trades:",
+        failedTrades.map((ft) => ft.tradeId),
+      );
+
+      await queueFailedTradeClosures(failedTrades);
+    }
+  } catch (error) {
+    await session.abortTransaction();
+    console.error("Error in batch trade closure:", error);
+    throw error;
+  } finally {
+    session.endSession();
+  }
+}
+
+async function recordTradeInPortfolio(userId, pnl, description) {
+  const MAX_RETRIES = 3;
+
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      await portFolioTracker.recordTrade(userId, pnl, description);
+      console.log(`Portfolio recorded for user ${userId}: $${pnl.toFixed(2)}`);
+      return true;
+    } catch (error) {
+      console.error(
+        `Attempt ${attempt} failed to record portfolio for user ${userId}:`,
+        error.message,
+      );
+
+      if (attempt === MAX_RETRIES) {
+        // Log to monitoring and queue for later
+        await queuePortfolioRetry({
+          userId,
+          pnl,
+          description,
+          timestamp: new Date(),
+          retryCount: 0,
+        });
+        return false;
+      }
+
+      // Exponential backoff
+      await new Promise((resolve) =>
+        setTimeout(resolve, 1000 * Math.pow(2, attempt)),
+      );
+    }
+  }
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+const captureDailyPositionPerformanceBaseline = async () => {
+  const now = new Date();
+
+  const todayStart = new Date(now);
+  todayStart.setHours(0, 0, 0, 0);
+
+  const result = await Position.updateMany(
+    {
+      status: "open",
+      $or: [
+        {
+          "performance.todayStartDate": {
+            $lt: todayStart,
+          },
+        },
+        {
+          "performance.todayStartDate": {
+            $exists: false,
+          },
+        },
+      ],
+    },
+    [
+      {
+        $set: {
+          "performance.todayStartValue": "$performance.currentBaseValue",
+          "performance.todayStartDate": todayStart,
+          "performance.todayMarketReturn": 0,
+          "performance.todayExtra": 0,
+          "performance.todayReturn": 0,
+          "performance.todayReturnPercent": 0,
+        },
+      },
+    ],
+  );
+
+  console.log(
+    `Daily position baseline captured at ${todayStart.toISOString()}. ` +
+      `Updated ${result.modifiedCount} positions.`,
+  );
+};
+const captureDailyTradePerformanceBaseline = async () => {
+  const now = new Date();
+
+  const todayStart = new Date(now);
+  todayStart.setHours(0, 0, 0, 0);
+
+  const result = await Trade.updateMany(
+    {
+      status: "open",
+      $or: [
+        {
+          "performance.todayStartDate": {
+            $lt: todayStart,
+          },
+        },
+        {
+          "performance.todayStartDate": {
+            $exists: false,
+          },
+        },
+      ],
+    },
+    [
+      {
+        $set: {
+          // Start today's market P&L from the
+          // current base value, excluding extra.
+          "performance.todayStartValue": "$performance.currentBaseValue",
+
+          "performance.todayStartDate": todayStart,
+
+          // Reset today's performance.
+          "performance.todayMarketReturn": 0,
+          "performance.todayExtra": 0,
+          "performance.todayReturn": 0,
+          "performance.todayReturnPercent": 0,
+        },
+      },
+    ],
+  );
+
+  console.log(
+    `Daily trade baseline captured at ${todayStart.toISOString()}. ` +
+      `Updated ${result.modifiedCount} trades.`,
+  );
+};
+
+module.exports = {
+  updateTradePerformance,
+  updateWalletPerformance,
+  updateAssetsData,
+  fetchAssetsWithRetry,
+  updatePositionsPerformance,
+  captureDailyPositionPerformanceBaseline,
+  captureDailyTradePerformanceBaseline,
+};

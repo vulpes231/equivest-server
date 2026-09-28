@@ -1,0 +1,224 @@
+const Usersetting = require("../../models/Usersetting");
+const {
+  fetchAllUsers,
+  completeVerification,
+  suspendUser,
+  deleteUser,
+  fetchUser,
+  approveWalletConnection,
+  getUserSettings,
+  resetVerification,
+  rejectVerification,
+  verifyUserAddress,
+} = require("../../services/admin/manageUserService");
+const queueService = require("../../services/queueService");
+const { getUserVerifyInfo } = require("../../services/user/verifyService");
+
+const getUser = async (req, res, next) => {
+  const { userId } = req.params;
+
+  try {
+    const user = await fetchUser(userId);
+    res.status(200).json({
+      data: user,
+      success: true,
+      message: "User fetched successfully.",
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const getAllUsers = async (req, res, next) => {
+  const sortBy = req.query["sort_by"];
+  const filterBy = req.query["filter_by"];
+
+  try {
+    const queryData = { sortBy, filterBy };
+    const { users, totalUser } = await fetchAllUsers(queryData);
+    res.status(200).json({
+      data: users,
+      pagination: {
+        totalItems: totalUser,
+      },
+      success: true,
+      message: "User fetched successfully.",
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const reviewVerification = async (req, res, next) => {
+  const { action, verifyId } = req.body;
+  const { userId } = req.params;
+  try {
+    const result = await completeVerification(userId, { action, verifyId });
+
+    if (result.success && result.user.mailing.emailNotification) {
+      await queueService.sendToQueue("email_queue", {
+        type: "IDENTITY_VERIFIED_EMAIL",
+        to: result.user.contactInfo.email,
+        templateData: {
+          user: result.user,
+        },
+      });
+    }
+
+    res.status(200).json({
+      data: null,
+      success: true,
+      message: "Verification complete",
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const cancelVerification = async (req, res, next) => {
+  const { action, verifyId } = req.body;
+  const { userId } = req.params;
+  try {
+    await resetVerification(userId, verifyId);
+
+    res.status(200).json({
+      data: null,
+      success: true,
+      message: "Verification reset success",
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const failVerification = async (req, res, next) => {
+  const { verifyId } = req.body;
+  const { userId } = req.params;
+  try {
+    const result = await rejectVerification(userId, verifyId);
+
+    if (result.success && result.user.mailing.emailNotification) {
+      await queueService.sendToQueue("email_queue", {
+        type: "IDENTITY_DECLINED_EMAIL",
+        to: result.user.contactInfo.email,
+        templateData: {
+          user: result.user,
+        },
+      });
+    }
+
+    res.status(200).json({
+      data: null,
+      success: true,
+      message: "Verification reject success",
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const getVerifyData = async (req, res, next) => {
+  const { userId } = req.params;
+  try {
+    const info = await getUserVerifyInfo(userId);
+
+    res.status(200).json({
+      data: info,
+      success: true,
+      message: "Fetch Success",
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const connectWallet = async (req, res, next) => {
+  const { userId } = req.params;
+  try {
+    await approveWalletConnection(userId);
+
+    res.status(200).json({
+      data: null,
+      success: true,
+      message: "Connection complete",
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const getUserConfiguration = async (req, res, next) => {
+  const { userId } = req.params;
+
+  try {
+    const settings = await Usersetting.findOne({ userId });
+
+    res.status(200).json({
+      data: settings,
+      success: true,
+      message: "User settings fetched succesfully",
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const suspendAccount = async (req, res, next) => {
+  const { userId } = req.params;
+  try {
+    await suspendUser(userId);
+    res.status(200).json({
+      data: null,
+      success: true,
+      message: "Account suspended.",
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const removeUser = async (req, res, next) => {
+  const { userId } = req.params;
+  try {
+    await deleteUser(userId);
+    res.status(200).json({
+      data: null,
+      success: true,
+      message: "Account deleted.",
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const verifyContactAddress = async (req, res, next) => {
+  const { userId } = req.params;
+  const { action } = req.body;
+
+  console.log(action, userId);
+
+  try {
+    await verifyUserAddress({ userId, action });
+    res.status(200).json({
+      data: null,
+      success: true,
+      message: "User address verified.",
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+module.exports = {
+  getAllUsers,
+  reviewVerification,
+  suspendAccount,
+  removeUser,
+  getUser,
+  connectWallet,
+  getVerifyData,
+  getUserConfiguration,
+  failVerification,
+  cancelVerification,
+  verifyContactAddress,
+};
