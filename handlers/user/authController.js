@@ -1,17 +1,43 @@
 const authService = require("../../services/user/authService");
 const queueService = require("../../services/queueService");
+const { verifyTurnstile } = require("../../utils/verifyTurnstile");
 
 const registerUser = async (req, res, next) => {
-  if (!req.body) return res.status(400).json({ message: "Bad request!" });
+  if (!req.body) {
+    return res.status(400).json({
+      message: "Bad request!",
+    });
+  }
 
-  const { email } = req.body;
-  if (!email) return res.status(400).json({ message: "Email Required!" });
+  console.log("re-body:", req.body);
+
+  const { email, turnstileToken, website, ...userData } = req.body;
+
+  if (website) {
+    return res.status(400).json({
+      message: "Invalid request.",
+    });
+  }
+
+  if (!email) {
+    return res.status(400).json({
+      message: "Email Required!",
+    });
+  }
 
   try {
-    const userData = req.body;
+    const isHuman = await verifyTurnstile(turnstileToken, req.ip);
 
-    const { accessToken, refreshToken } =
-      await authService.registerService(userData);
+    if (!isHuman) {
+      return res.status(400).json({
+        message: "Turnstile Verification failed. Please try again.",
+      });
+    }
+
+    const { accessToken, refreshToken } = await authService.registerService({
+      ...userData,
+      email,
+    });
 
     await queueService.sendToQueue("email_queue", {
       type: "VERIFICATION_EMAIL",

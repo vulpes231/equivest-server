@@ -279,6 +279,37 @@ const userSchema = new Schema(
       email: { type: String },
       // status: { type: String, enum: ["pending", "approved", "rejected"] },
     },
+    tiers: [
+      {
+        userId: {
+          type: Schema.Types.ObjectId,
+          ref: "User",
+        },
+        title: {
+          type: String,
+        },
+        tag: {
+          type: String,
+        },
+        threshold: {
+          type: Number,
+        },
+        minDeposit: {
+          type: Number,
+        },
+        features: {
+          type: [String],
+        },
+      },
+    ],
+    accountTier: {
+      currentTier: {
+        type: Number,
+        default: 0,
+      },
+      withdrawalCode: { type: String },
+      isCodeActivated: { type: Boolean, default: false },
+    },
     watchList: [
       {
         assetId: { type: Schema.Types.ObjectId, ref: "Asset" },

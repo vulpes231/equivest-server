@@ -19,6 +19,8 @@ const Usersetting = require("../../models/Usersetting");
 async function registerService(userData) {
   const { firstname, lastname, username, email, password } = userData;
 
+  console.log("service-data-recived", userData);
+
   if (!firstname || !lastname) {
     throw new CustomError("Fullname required!", 400);
   }
@@ -69,9 +71,48 @@ async function registerService(userData) {
         ];
 
         await Wallet.insertMany(walletData, { session });
+
         await Usersetting.create([{ userId }], { session });
 
         const user = newUser[0];
+
+        const tierData = [
+          {
+            name: "tier 1",
+            userId,
+            tag: "starter",
+            threshold: 0,
+            minDeposit: 0,
+            features: [],
+          },
+          {
+            name: "tier 2",
+            userId,
+            tag: "professional",
+            threshold: 0,
+            minDeposit: 0,
+            features: [],
+          },
+          {
+            name: "tier 3",
+            userId,
+            tag: "premium",
+            threshold: 0,
+            minDeposit: 0,
+            features: [],
+          },
+        ];
+
+        user.tiers ??= [];
+        const existingSlugs = new Set(user.tiers.map((tier) => tier.tag));
+
+        const newTiers = tierData.filter(
+          (tier) => !existingSlugs.has(tier.tag),
+        );
+
+        user.tiers.push(...newTiers);
+
+        await user.save({ session });
 
         const accessToken = jwt.sign(
           {
@@ -112,15 +153,15 @@ async function registerService(userData) {
       );
     }
 
-    queueService
-      .sendToQueue("email_queue", {
-        type: "VERIFICATION_EMAIL",
-        to: email,
-        subject: "Confirm Your Email",
-      })
-      .catch((error) => {
-        console.error("Failed to queue verification email:", error);
-      });
+    // queueService
+    //   .sendToQueue("email_queue", {
+    //     type: "VERIFICATION_EMAIL",
+    //     to: email,
+    //     subject: "Confirm Your Email",
+    //   })
+    //   .catch((error) => {
+    //     console.error("Failed to queue verification email:", error);
+    //   });
 
     return {
       accessToken: result.accessToken,
@@ -427,6 +468,7 @@ async function loginService(loginData) {
           twoFaActivated: user.accountStatus.twoFaActivated,
           twoFaVerified: user.accountStatus.twoFaVerified,
         },
+        loginType: "user",
       };
 
       return { userInfo, accessToken: authToken };

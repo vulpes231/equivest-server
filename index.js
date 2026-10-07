@@ -16,6 +16,7 @@ const { requireRole } = require("./middlewares/requireRole.js");
 const workerService = require("./services/workerService.js");
 const queueService = require("./services/queueService.js");
 const { closeTransporter } = require("./utils/mailer.js");
+const { connectRedis, redisClient } = require("./configs/redis.js");
 
 async function initializeServices() {
   try {
@@ -39,6 +40,8 @@ async function initializeServices() {
 initCronJobs();
 
 const app = express();
+app.set("trust proxy", 1);
+
 const PORT = process.env.PORT || 3000;
 
 app.use(cors(corsOptions));
@@ -85,6 +88,7 @@ const profileSettingsRoute = require("./routes/user/profileSettings.js");
 const chartRoute = require("./routes/user/portfolio.js");
 const positionRoute = require("./routes/user/position.js");
 const comRoute = require("./routes/user/com.js");
+const tierRoute = require("./routes/user/tier.js");
 
 // admin routers
 const enrollAdminRoute = require("./routes/admin/enrolladmin.js");
@@ -103,6 +107,7 @@ const manageConfigRoute = require("./routes/admin/manageconfig.js");
 const manageSysInfoRoute = require("./routes/admin/systemanalytics.js");
 const manageAssetRoute = require("./routes/admin/manageAsset.js");
 const manageArticleRoute = require("./routes/admin/managearticle.js");
+const manageTierRoute = require("./routes/admin/managetier.js");
 
 // routes
 
@@ -122,6 +127,7 @@ app.use("/login", loginAdminRoute);
 
 // user protected routes
 app.use(verifyJWT);
+app.use("/tier", tierRoute);
 app.use("/user", userProfileRoute);
 app.use("/signout", userLogoutRoute);
 app.use("/wallet", walletRoute);
@@ -201,6 +207,11 @@ app.use(
   manageAssetRoute,
 );
 app.use(
+  "/managetier",
+  requireRole([ROLES.ADMIN, ROLES.SUPER_USER]),
+  manageTierRoute,
+);
+app.use(
   "/manage-article",
   requireRole([ROLES.ADMIN, ROLES.SUPER_USER]),
   manageArticleRoute,
@@ -209,10 +220,23 @@ app.use(
 let server;
 
 mongoose.connection.once("connected", async () => {
-  await initializeServices();
-  server = app.listen(PORT, "127.0.0.1", () =>
-    console.log(`Server started on http://127.0.0.1:${PORT}`),
-  );
+  try {
+    await connectRedis();
+    console.log("Redis connected");
+
+    await initializeServices();
+
+    // server = app.listen(PORT, () =>
+    //   console.log(`Server started on http://localhost:${PORT}`),
+    // );
+
+    server = app.listen(PORT, "127.0.0.1", () =>
+      console.log(`Server started on http://127.0.0.1:${PORT}`),
+    );
+  } catch (error) {
+    console.error("Failed to initialize server:", error);
+    process.exit(1);
+  }
 });
 
 app.use(errorHandler);
@@ -248,6 +272,12 @@ const shutdown = async (signal) => {
     await closeTransporter();
 
     await queueService.close();
+
+    if (redisClient.isOpen) {
+      console.log("Closing Redis connection...");
+      await redisClient.quit();
+      console.log("Redis connection closed");
+    }
 
     if (mongoose.connection.readyState === 1) {
       console.log("Closing MongoDB connection...");
