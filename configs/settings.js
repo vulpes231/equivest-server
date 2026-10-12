@@ -4,9 +4,7 @@ require("dotenv").config();
 const allowedOrigins = [
   "http://localhost:5173",
   "http://localhost:5174",
-  "https://itrust-admin.netlify.app",
-  "https://itrustinvestment.netlify.app",
-  "https://itrustinvestment.com",
+  "https://equivestt.netlify.app",
 ];
 
 const DATABASE_URI = process.env.DATABASE_URI;
