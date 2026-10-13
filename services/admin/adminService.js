@@ -17,12 +17,12 @@ async function registerAdmin(adminData) {
 
   try {
     const emailExists = await Admin.findOne({ email }).select(
-      "-password -refreshToken"
+      "-password -refreshToken",
     );
     if (emailExists) throw new CustomError("Email taken!", 409);
 
     const userExists = await Admin.findOne({ username }).select(
-      "-password -refreshToken"
+      "-password -refreshToken",
     );
     if (userExists) throw new CustomError("Username taken!", 409);
 
@@ -51,7 +51,7 @@ async function registerAdmin(adminData) {
     }
 
     const safeAdmin = await Admin.findById(admin._id).select(
-      "-password -refreshToken"
+      "-password -refreshToken",
     );
 
     return {
@@ -66,19 +66,19 @@ async function registerAdmin(adminData) {
 }
 
 async function registerSuperUser(adminData) {
-  const { email, username, password, adminRole } = adminData;
+  const { email, username, password } = adminData;
 
-  if (!email || !adminRole || !username || !password)
+  if (!email || !username || !password)
     throw new CustomError("Bad request!", 400);
 
   try {
     const emailExists = await Admin.findOne({ email }).select(
-      "-password -refreshToken"
+      "-password -refreshToken",
     );
     if (emailExists) throw new CustomError("Email taken!", 409);
 
     const userExists = await Admin.findOne({ username }).select(
-      "-password -refreshToken"
+      "-password -refreshToken",
     );
     if (userExists) throw new CustomError("Username taken!", 409);
 
@@ -130,7 +130,7 @@ async function loginAdmin(adminData) {
         role: admin.role,
       },
       process.env.ACCESS_TOKEN_SECRET,
-      { expiresIn: "1d" }
+      { expiresIn: "1d" },
     );
 
     const refreshToken = jwt.sign(
@@ -140,7 +140,7 @@ async function loginAdmin(adminData) {
         role: admin.role,
       },
       process.env.REFRESH_TOKEN_SECRET,
-      { expiresIn: "7d" }
+      { expiresIn: "7d" },
     );
 
     admin.refreshToken = refreshToken;
@@ -196,7 +196,7 @@ async function fetchAdminInfo(adminId) {
   if (!adminId) throw new CustomError("Bad request!", 400);
   try {
     const admin = await Admin.findById(adminId).select(
-      "-password -refreshToken"
+      "-password -refreshToken",
     );
     if (!admin) throw new CustomError("Admin not found!", 404);
 
