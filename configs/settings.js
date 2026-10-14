@@ -5,7 +5,7 @@ const allowedOrigins = [
   "http://localhost:5173",
   "http://localhost:5174",
   "https://equivestt.netlify.app",
-  "https://equivest-admin.netlify.app/admin",
+  "https://equivest-admin.netlify.app",
 ];
 
 const DATABASE_URI = process.env.DATABASE_URI;

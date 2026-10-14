@@ -10,7 +10,7 @@ function baseTemplate({ content }) {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-  <title>Itrust Investment</title>
+  <title>Equivest Market</title>
 
   <style>
     body {
@@ -34,7 +34,7 @@ function baseTemplate({ content }) {
     }
 
     a {
-      color: #5162be;
+      color: #00C9A7;
     }
 
     @media only screen and (max-width: 600px) {
@@ -108,7 +108,7 @@ function baseTemplate({ content }) {
             >
               <img
                 src="https://itrustinvestment.com/itrust.png"
-                alt="Itrust Investment"
+                alt="Equivest Market"
                 width="150"
                 style="
                   display: block;
@@ -159,7 +159,7 @@ function baseTemplate({ content }) {
                 margin: 0 0 10px 0;
                 padding: 0;
               ">
-                © ${new Date().getFullYear()} Itrust Investment.
+                © ${new Date().getFullYear()} Equivest Market.
                 All rights reserved.
               </p>
 
