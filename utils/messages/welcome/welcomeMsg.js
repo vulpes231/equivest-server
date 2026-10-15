@@ -17,7 +17,7 @@ function buildWelcomeMsg(username) {
             font-size: 15px;
             line-height: 1.7;
           ">
-            Welcome to Itrust Investment! We're thrilled to have you on board.
+            Welcome to Equivest Market! We're thrilled to have you on board.
           </p>
   
           <p style="
@@ -62,8 +62,8 @@ function buildWelcomeMsg(username) {
           ">
             If you need any help getting started or have questions, our team is
             ready to assist at
-            <a href="mailto:support@itrustinvestment.com">
-              support@itrustinvestment.com
+            <a href="mailto:support@equivestmarket.com">
+              support@equivestmarket.com
             </a>.
           </p>
   
@@ -72,11 +72,11 @@ function buildWelcomeMsg(username) {
             font-size: 15px;
             line-height: 1.7;
           ">
-            Thank you for using Itrust Investment!
+            Thank you for using Equivest Market!
           </p>
           <div>
           <p style="margin: 0; padding: 0;">Best regards</p>
-          <p style="margin: 0; padding: 0;">Itrust Investment Team</p>
+          <p style="margin: 0; padding: 0;">Equivest Market Team</p>
         </div>
         `;
 

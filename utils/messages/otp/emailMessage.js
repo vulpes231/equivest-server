@@ -7,7 +7,7 @@ function buildEmailMsg(otp) {
         <p>Hello,</p>
 
         <p>
-            Thank you for registering with <b>Itrust Investment.</b>
+            Thank you for registering with <b>Equivest Market.</b>
         </p>
         <p>To verify your email and activate your account, please use the cobfirmation code below.</p>
 
@@ -26,12 +26,12 @@ function buildEmailMsg(otp) {
         </div>
 
         <p>
-           If you did not create an account, please disregard this email or contact us at <a href="mailto:support@itrustinvestment.com">support@itrustinvestment.com</a> for assistance.
+           If you did not create an account, please disregard this email or contact us at <a href="mailto:support@equivestmarket.com">support@equivestmarket.com</a> for assistance.
         </p>
         <p>Welcome to a smarter way to invest.</p>
         <div>
           <p style="margin: 0; padding: 0;">Best regards</p>
-          <p style="margin: 0; padding: 0;">Itrust Investment Team</p>
+          <p style="margin: 0; padding: 0;">Equivest Market Team</p>
         </div>
     `;
 
@@ -46,7 +46,7 @@ function buildEmailChangeMsg(otp) {
 
     <p>
       We received a request to change the email address associated with your
-      <b>Itrust Investment</b> account.
+      <b>Equivest Market</b> account.
     </p>
 
     <p>
@@ -76,15 +76,15 @@ function buildEmailChangeMsg(otp) {
     <p>
       If you did not request an email address change, please disregard this
       email and contact us at
-      <a href="mailto:support@itrustinvestment.com">
-        support@itrustinvestment.com
+      <a href="mailto:support@equivestmarket.com">
+        support@equivestmarket.com
       </a>
       immediately.
     </p>
 
     <div>
     <p style="margin: 0; padding: 0;">Best regards</p>
-    <p style="margin: 0; padding: 0;">Itrust Investment Team</p>
+    <p style="margin: 0; padding: 0;">Equivest Market Team</p>
   </div>
   `;
 
@@ -100,7 +100,7 @@ function buildTwoFaMsg(otp) {
         <p>Hello,</p>
 
         <p>
-            We received a login request for your Itrust Investment account.
+            We received a login request for your Equivest Market account.
             Use the verification code below to continue.
         </p>
 
@@ -124,7 +124,7 @@ function buildTwoFaMsg(otp) {
         </p>
         <div>
         <p style="margin: 0; padding: 0;">Best regards</p>
-        <p style="margin: 0; padding: 0;">Itrust Investment Team</p>
+        <p style="margin: 0; padding: 0;">Equivest Market Team</p>
       </div>
     `;
 

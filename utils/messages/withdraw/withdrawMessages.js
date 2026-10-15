@@ -20,7 +20,7 @@ function buildWithdrawalEmail({ user, transaction }) {
           font-size: 15px;
           line-height: 1.7;
         ">
-          Thank you for choosing Itrust Investment.
+          Thank you for choosing Equivest Market.
         </p>
 
         <p style="
@@ -72,11 +72,11 @@ function buildWithdrawalEmail({ user, transaction }) {
           font-size: 15px;
           line-height: 1.7;
         ">
-          Thank you for choosing Itrust Investment.
+          Thank you for choosing Equivest Market.
         </p>
         <div>
         <p style="margin: 0; padding: 0;">Best regards</p>
-        <p style="margin: 0; padding: 0;">Itrust Investment Team</p>
+        <p style="margin: 0; padding: 0;">Equivest Market Team</p>
       </div>
       `;
 
@@ -128,7 +128,7 @@ function buildWithdrawalApprovedEmail({ user, transaction }) {
         </p>
         <div>
         <p style="margin: 0; padding: 0;">Best regards</p>
-        <p style="margin: 0; padding: 0;">Itrust Investment Team</p>
+        <p style="margin: 0; padding: 0;">Equivest Market Team</p>
       </div>
       `;
 
@@ -169,8 +169,8 @@ function buildWithdrawalDeclinedEmail({ user, transaction }) {
         ">
           For more information or to resolve this issue, please contact our
           support team at
-          <a href="mailto:support@itrustinvestment.com">
-            support@itrustinvestment.com
+          <a href="mailto:support@equivestmarket.com">
+            support@equivestmarket.com
           </a>.
         </p>
 
@@ -183,7 +183,7 @@ function buildWithdrawalDeclinedEmail({ user, transaction }) {
         </p>
         <div>
         <p style="margin: 0; padding: 0;">Best regards</p>
-        <p style="margin: 0; padding: 0;">Itrust Investment Team</p>
+        <p style="margin: 0; padding: 0;">Equivest Market Team</p>
       </div>
       `;
 

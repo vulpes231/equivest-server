@@ -107,7 +107,7 @@ function baseTemplate({ content }) {
               "
             >
               <img
-                src="https://itrustinvestment.com/itrust.png"
+                src="https://equivestmarket.com/equi-logo.png"
                 alt="Equivest Market"
                 width="150"
                 style="

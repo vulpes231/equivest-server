@@ -15,7 +15,7 @@ function buildNewAccountAlert(username) {
               <p>
                   Regards
               </p>
-              <p>Itrust investments</p>
+              <p>Equivest Market</p>
           `;
 
   return baseTemplate({

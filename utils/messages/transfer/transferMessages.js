@@ -39,11 +39,11 @@ function buildTransferEmail({ user, transaction }) {
           font-size: 15px;
           line-height: 1.7;
         ">
-          Thank you for choosing Itrust Investment.
+          Thank you for choosing Equivest Market.
         </p>
         <div>
           <p style="margin: 0; padding: 0;">Best regards</p>
-          <p style="margin: 0; padding: 0;">Itrust Investment Team</p>
+          <p style="margin: 0; padding: 0;">Equivest Market Team</p>
         </div>
       `;
 

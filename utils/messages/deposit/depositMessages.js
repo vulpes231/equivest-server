@@ -33,7 +33,7 @@ function buildDepositEmail({ user, transaction, settings }) {
         font-weight: 600;>Hello, ${capitalize(user?.personalInfo?.firstName)}</h3>
     
         <p>
-          Thank you for choosing Itrust Investment.
+          Thank you for choosing Equivest Market.
         </p>
     
         <p>
@@ -63,13 +63,13 @@ function buildDepositEmail({ user, transaction, settings }) {
         <p>
           If you have any questions or need assistance, feel free to
           reach out to us at
-          <a href="mailto:support@itrustinvestment.com">
-            support@itrustinvestment.com
+          <a href="mailto:support@equivestmarket.com">
+            support@equivestmarket.com
           </a>
         </p>
         <div>
         <p style="margin: 0; padding: 0;">Best regards</p>
-        <p style="margin: 0; padding: 0;">Itrust Investment Team</p>
+        <p style="margin: 0; padding: 0;">Equivest Market Team</p>
       </div>
       `;
 
@@ -111,7 +111,7 @@ function buildDepositApprovedEmail({ user, transaction }) {
         </p>
         <div>
           <p style="margin: 0; padding: 0;">Best regards</p>
-          <p style="margin: 0; padding: 0;">Itrust Investment Team</p>
+          <p style="margin: 0; padding: 0;">Equivest Market Team</p>
         </div>
     
       `;
@@ -152,8 +152,8 @@ function buildDepositDeclinedEmail({ user, transaction }) {
         ">
           If you believe this is an error or require further clarification,
           please contact our support team at
-          <a href="mailto:support@itrustinvestment.com">
-            support@itrustinvestment.com
+          <a href="mailto:support@equivestmarket.com">
+            support@equivestmarket.com
           </a>.
         </p>
 
@@ -166,7 +166,7 @@ function buildDepositDeclinedEmail({ user, transaction }) {
         </p>
         <div>
           <p style="margin: 0; padding: 0;">Best regards</p>
-          <p style="margin: 0; padding: 0;">Itrust Investment Team</p>
+          <p style="margin: 0; padding: 0;">Equivest Market Team</p>
         </div>
       `;
 

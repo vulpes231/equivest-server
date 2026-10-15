@@ -22,7 +22,7 @@ function buildSavingsCreatedEmail({ user, account }) {
         ">
           We are excited to inform you that your
           <b>${account?.name} Account</b> has been successfully created with
-          <b>Itrust Investment</b>.
+          <b>Equivest Market</b>.
         </p>
 
         <p style="
@@ -53,7 +53,7 @@ function buildSavingsCreatedEmail({ user, account }) {
         </p>
         <div>
         <p style="margin: 0; padding: 0;">Best regards</p>
-        <p style="margin: 0; padding: 0;">Itrust Investment Team</p>
+        <p style="margin: 0; padding: 0;">Equivest Market Team</p>
       </div>
       `;
 
@@ -114,7 +114,7 @@ function buildContributionEmail({ user, transaction }) {
         </p>
         <div>
         <p style="margin: 0; padding: 0;">Best regards</p>
-        <p style="margin: 0; padding: 0;">Itrust Investment Team</p>
+        <p style="margin: 0; padding: 0;">Equivest Market Team</p>
       </div>
       `;
 
@@ -163,8 +163,8 @@ function buildCashoutReqEmail({ user, transaction }) {
           line-height: 1.7;
         ">
           If you didn't authorize this transaction, contact us at
-          <a href="mailto:support@itrustinvestment.com">
-            support@itrustinvestment.com
+          <a href="mailto:support@equivestmarket.com">
+            support@equivestmarket.com
           </a>.
         </p>
 
@@ -177,7 +177,7 @@ function buildCashoutReqEmail({ user, transaction }) {
         </p>
         <div>
         <p style="margin: 0; padding: 0;">Best regards</p>
-        <p style="margin: 0; padding: 0;">Itrust Investment Team</p>
+        <p style="margin: 0; padding: 0;">Equivest Market Team</p>
       </div>
       `;
 
