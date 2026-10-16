@@ -23,6 +23,10 @@ function buildNewTradeAlert({ user, trade }) {
             <li> <b>Quantity:</b>  ${trade?.execution?.quantity}</li>
             <li> <b>Date:</b> ${format(trade?.createdAt, "yyyy-mm-dd hh:mm a")}</li>
           </ul>
+          <p>
+                  Regards
+              </p>
+              <p>Equivest Market</p>
  
         `;
 

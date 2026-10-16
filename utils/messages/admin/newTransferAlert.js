@@ -21,6 +21,10 @@ function buildNewTransferAlert({ user, transaction }) {
             <li> <b>To:</b> ${transaction?.meta?.to}</li>
             <li> <b>Date:</b> ${format(transaction?.createdAt, "yyyy-mm-dd hh:mm a")}</li>
           </ul>
+          <p>
+                  Regards
+              </p>
+              <p>Equivest Market</p>
         `;
 
   return baseTemplate({
