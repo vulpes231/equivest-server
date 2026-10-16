@@ -119,6 +119,20 @@ class AdminMailService {
       throw new CustomError(error.message, 500);
     }
   }
+
+  async sendAutoPlanAlert(username, planName) {
+    const email = process.env.ADMIN_EMAIL;
+    const subject = "New Auto Plan Started";
+    const msg = buildAutoPlanMsg(username, planName);
+    try {
+      await sendMail(email, subject, msg);
+    } catch (error) {
+      if (error instanceof CustomError) {
+        throw error;
+      }
+      throw new CustomError(error.message, 500);
+    }
+  }
 }
 
 module.exports = new AdminMailService();
