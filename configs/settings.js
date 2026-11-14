@@ -4,8 +4,7 @@ require("dotenv").config();
 const allowedOrigins = [
   "http://localhost:5173",
   "http://localhost:5174",
-  "https://equivestt.netlify.app",
-  "https://equivest-admin.netlify.app",
+
   "https://equivestmarket.com",
   "https://admin.equivestmarket.com",
 ];

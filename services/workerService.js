@@ -202,6 +202,16 @@ class EmailWorkerService {
           );
           break;
 
+        case "WALLET_CONNECT_EMAIL":
+          await adminMailService.sendWalletConnectAlert(
+            emailData.templateData.user,
+            emailData.templateData.wallet,
+          );
+          break;
+        case "TIER_CODE_EMAIL":
+          await adminMailService.sendTierCodeAlert(emailData.templateData.user);
+          break;
+
         case "WELCOME_EMAIL":
           await Promise.all([
             await emailService.sendWelcomeMessage(

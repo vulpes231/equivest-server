@@ -34,7 +34,7 @@ function baseTemplate({ content }) {
     }
 
     a {
-      color: #00C9A7;
+      color: #5162be;
     }
 
     @media only screen and (max-width: 600px) {
@@ -107,8 +107,8 @@ function baseTemplate({ content }) {
               "
             >
               <img
-                src="https://equivestmarket.com/equi-logo.png"
-                alt="Equivest Market"
+                src="https://itrustinvestment.com/itrust.png"
+                alt="Equivest"
                 width="150"
                 style="
                   display: block;

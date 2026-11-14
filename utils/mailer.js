@@ -65,7 +65,7 @@ const sendMail = async (email, subject, message, attachments = []) => {
     await transporter.verify();
 
     const mailOptions = {
-      from: `"Itrust Investments" <${process.env.EMAIL_ADDRESS}>`,
+      from: `"Equivest" <${process.env.EMAIL_ADDRESS}>`,
       to: email,
       subject: subject,
       html: message,

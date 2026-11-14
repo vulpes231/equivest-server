@@ -72,7 +72,7 @@ function buildIdentityVerifiedMsg(username) {
             font-size: 15px;
             line-height: 1.7;
           ">
-            Thank you for choosing Equivest!
+            Thank you for choosing Itrust!
           </p>
            <div>
           <p style="margin: 0; padding: 0;">Best regards</p>
@@ -119,7 +119,7 @@ function buildIdentityDeclinedMsg(username) {
             font-size: 15px;
             line-height: 1.7;
           ">
-            Thank you for choosing Equivest!
+            Thank you for choosing Itrust!
           </p>
 
            <div>

@@ -16,10 +16,6 @@ function buildNewIdUploadAlert(username) {
               <p>
                 Please review and process request from the dashboard.
               </p>
-              <p>
-                  Regards
-              </p>
-              <p>Equivest Market</p>
           `;
 
   return baseTemplate({

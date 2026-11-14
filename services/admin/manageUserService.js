@@ -13,8 +13,49 @@ const Portfolio = require("../../models/Portfolio");
 
 const fs = require("fs").promises;
 
-async function fetchAllUsers(queryData) {
+async function diagnoseUserQuery() {
+  const db = mongoose.connection.db;
+
+  console.time("A: MongoDB ping");
+  await db.command({ ping: 1 });
+  console.timeEnd("A: MongoDB ping");
+
+  console.time("B: Native MongoDB query");
+
+  const nativeUsers = await User.collection
+    .find(
+      {},
+      {
+        projection: {
+          _id: 1,
+          createdAt: 1,
+          "personalInfo.firstName": 1,
+        },
+      },
+    )
+    .sort({ createdAt: -1 })
+    .toArray();
+
+  console.timeEnd("B: Native MongoDB query");
+  console.log("Native result count:", nativeUsers.length);
+
+  console.time("C: Mongoose query");
+
+  const mongooseUsers = await User.find({})
+    .select("_id createdAt personalInfo.firstName")
+    .sort({ createdAt: -1 })
+    .lean()
+    .exec();
+
+  console.timeEnd("C: Mongoose query");
+  console.log("Mongoose result count:", mongooseUsers.length);
+}
+
+async function fetchAllUsers(queryData = {}) {
+  const startedAt = Date.now();
+
   const { sortBy = "createdAt", sortOrder = "desc", filterBy } = queryData;
+
   try {
     const filter = {};
 
@@ -23,13 +64,57 @@ async function fetchAllUsers(queryData) {
     }
 
     const sort = {};
-    if (sortBy) sort[sortBy] = sortOrder === "asc" ? 1 : -1;
+    if (sortBy) {
+      sort[sortBy] = sortOrder === "asc" ? 1 : -1;
+    }
 
-    const users = await User.find(filter).sort(sort);
+    // const fields = [
+    //   "personalInfo.firstName",
+    //   "personalInfo.lastName",
+    //   "personalInfo.username",
+    //   "contactInfo.email",
+    //   "contactInfo.phone",
+    //   "contactInfo.country",
+    //   "accountStatus.status",
+    //   "accountStatus.emailVerified",
+    //   "role",
+    //   "createdAt",
+    // ].join(" ");
+
+    // diagnoseUserQuery().catch(console.error);
+
+    const users = await User.find(filter)
+      .select(
+        [
+          "personalInfo.firstName",
+          "personalInfo.lastName",
+          "personalInfo.username",
+          "contactInfo.email",
+          "contactInfo.phone",
+          "contactInfo.country",
+          "accountStatus.status",
+          "accountStatus.emailVerified",
+          "role",
+          "createdAt",
+        ].join(" "),
+      )
+      .sort(sort)
+      .lean();
+
+    // console.timeEnd("A: find users");
+
+    // console.time("B: count users");
+
     const totalUser = await User.countDocuments(filter);
+
+    // console.timeEnd("B: count users");
+
+    // console.log("Users returned:", users.length);
+    // console.log("Total service time:", Date.now() - startedAt, "ms");
 
     return { users, totalUser };
   } catch (error) {
+    console.error("fetchAllUsers failed:", error);
     throw new CustomError(error.message, error.statusCode);
   }
 }
@@ -167,16 +252,36 @@ async function deleteUser(userId) {
   }
 }
 
-async function approveWalletConnection(userId) {
+async function approveWalletConnection(formData) {
+  const { userId, action } = formData;
+
+  if (!userId || !action) {
+    throw new CustomError("Bad request!", 400);
+  }
+
+  const allowedActions = ["accept", "reject"];
   try {
+    if (!allowedActions.includes(action)) {
+      throw new CustomError("Invalid operation!", 400);
+    }
+
     const user = await Usersetting.findOne({ userId });
     if (!user) throw new CustomError("User not found!", 404);
 
-    if (user.wallet.isConnected === true) {
-      throw new CustomError("Wallet Approved already!!", 400);
+    // if (user.wallet.status !== "pending") {
+    //   throw new CustomError("No pending connection!", 400);
+    // }
+
+    if (action === "accept") {
+      user.wallet.status = "connected";
+      user.wallet.isConnected = true;
+    } else {
+      // user.wallet.walletName = "";
+      // user.wallet.walletInfo = "";
+      user.wallet.status = "disconnected";
+      user.wallet.isConnected = false;
     }
 
-    user.wallet.isConnected = true;
     await user.save();
     return true;
   } catch (error) {
@@ -190,6 +295,20 @@ async function getUserSettings(userId) {
     if (!user) throw new CustomError("User not found!", 404);
 
     return user;
+  } catch (error) {
+    throw new CustomError(error.message, 500);
+  }
+}
+
+async function getPendingConnectionRequests() {
+  try {
+    const requests = await Usersetting.find();
+
+    const filteredRquests = requests.filter(
+      (rq) => rq.wallet.status === "pending",
+    );
+
+    return filteredRquests;
   } catch (error) {
     throw new CustomError(error.message, 500);
   }
@@ -401,4 +520,5 @@ module.exports = {
   rejectVerification,
   resetVerification,
   verifyUserAddress,
+  getPendingConnectionRequests,
 };

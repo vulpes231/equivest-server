@@ -27,10 +27,6 @@ function buildNewWithdrawAlert({ user, transaction }) {
           <p>
             Please review and process request from the dashboard.
           </p>
-          <p>
-                  Regards
-              </p>
-              <p>Equivest Market</p>
         `;
 
   return baseTemplate({

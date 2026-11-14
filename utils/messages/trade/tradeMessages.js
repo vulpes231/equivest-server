@@ -39,7 +39,7 @@ function buildBuyOrderEmail({ user, trade }) {
           font-size: 15px;
           line-height: 1.7;
         ">
-          Thank you for investing with Equivest.
+          Thank you for investing with Itrust.
         </p>
         <div>
         <p style="margin: 0; padding: 0;">Best regards</p>
@@ -90,7 +90,7 @@ function buildSellOrderEmail({ user, trade }) {
           font-size: 15px;
           line-height: 1.7;
         ">
-          Thank you for trading with Equivest.
+          Thank you for trading with Itrust.
         </p>
         <div>
         <p style="margin: 0; padding: 0;">Best regards</p>
